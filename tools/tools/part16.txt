@@ -1,0 +1,209 @@
+===ATLAS_FILE: src/lib/v9/engines/jackpot.ts===
+// ============================================================
+// JACKPOT ENGINE v9.4 — parlay-max, rho = -0.08 (RULE 1)
+// v9.4 EVIDENCE TUNE (364-game backtest): pick = argmax(dc)
+// ALWAYS. SOF is now an INFORMATION FLAG only (tight-game badge
+// + secondary pick); the v8.7 draw override cost ~12pts of hit
+// rate and multiplicatively reduced ticket probability (§3.5).
+// RULE 6 preserved: no learning adjustments, no decorr override.
+// Confidence cap 72% preserved (§3.5).
+// ============================================================
+import { DC_RHO_JACKPOT, DC_RHO_STANDARD } from '../atlas-types';
+import type { Match, Outcome, AtlasJackpotAnalysis, DecorrelationResult, Verdict } from '../atlas-types';
+import { calibrateLambda, stripMargin } from '../math/calibration';
+import { buildScoreMatrix, outcomeProbs } from '../math/dixon-coles';
+import { adaptiveSimulate } from '../math/adaptive-mc';
+
+export function atlasAnalyseJackpotV9(match: Match, phi = 0.10): AtlasJackpotAnalysis {
+  const h = parseFloat(match.h), d = parseFloat(match.d), a = parseFloat(match.a);
+  if (!(h > 1 && d > 1 && a > 1)) throw new Error('Invalid 1X2 odds');
+  const { probs: bookProbs, margin } = stripMargin(h, d, a);
+  const cal = calibrateLambda(h, d, a, DC_RHO_JACKPOT, match.prior);
+  const { matrix, raw, sum } = buildScoreMatrix(cal.lambdaH, cal.lambdaA, DC_RHO_JACKPOT);
+  const dc = outcomeProbs(raw, sum);
+
+  const std = buildScoreMatrix(cal.lambdaH, cal.lambdaA, DC_RHO_STANDARD);
+  const dcStd = outcomeProbs(std.raw, std.sum);
+  const homeBias = dcStd.home - dc.home;
+  const tightGame = Math.abs(dc.home - dc.away) < 0.08;
+
+  const sorted = (Object.entries(dc) as [Outcome, number][]).sort((x, y) => y[1] - x[1]);
+  // v9.4: parlay-optimal pick is the max-probability outcome, always
+  const pick: Outcome = sorted[0][0];
+  const secondaryPick: Outcome = sorted[1][0];
+  // v9.4: SOF = information flag only (tight game / draw-shortest)
+  const sofTriggered = Math.abs(dc.home - dc.away) < 0.06 || (d < h && d < a);
+
+  const edges: Record<Outcome, number> = {
+    home: dc.home - bookProbs[0], draw: dc.draw - bookProbs[1], away: dc.away - bookProbs[2],
+  };
+  const evs: Record<Outcome, number> = {
+    home: dc.home * h - 1, draw: dc.draw * d - 1, away: dc.away * a - 1,
+  };
+  const spots = (Object.keys(edges) as Outcome[])
+    .filter((o) => edges[o] > 0 && evs[o] > 0)
+    .sort((x, y) => edges[y] - edges[x]);
+  const maxEdge = Math.max(...Object.values(edges), 0);
+  const skippedDecorrOverride = spots[0] && spots[0] !== pick && Math.min(100, maxEdge * 500) >= 15
+    ? { wouldFlipTo: spots[0], evLost: evs[spots[0]] } : null;
+
+  const sim = adaptiveSimulate(cal.lambdaH, cal.lambdaA, DC_RHO_JACKPOT, { gridProbs: dc, gridPick: pick });
+  const confidence = Math.min(dc[pick], 0.72);
+
+  const decorrelation: DecorrelationResult = {
+    score: Math.min(100, maxEdge * 500),
+    edges, evs, spotted: spots[0] ?? null, hasRealSpot: spots.length > 0, maxEdge,
+  };
+
+  const thresholdPass = Math.abs(dc[pick] - 0.5) >= phi;
+  const verdict: Verdict = thresholdPass ? 'BET' : 'NO-BET';
+
+  return {
+    pick, confidence,
+    probs: dc, dcProbs: dc,
+    bookProbs: { home: bookProbs[0], draw: bookProbs[1], away: bookProbs[2] },
+    margin, marginWarning: { level: 'none', msg: '' },
+    calibration: cal, scoreMatrix: matrix, decorrelation, portfolio: [],
+    sofTriggered, decorrOverride: false,
+    thresholdPass, verdict, tightGame,
+    sim, engine: 'jackpot',
+    parlayScore: Math.log(Math.max(dc[pick], 1e-9)),
+    upsetVulnerable: Math.abs(dc.home - dc.away) < 0.05,
+    secondaryPick, secondaryProb: dc[secondaryPick],
+    homeBias, skippedDecorrOverride,
+  };
+}
+===ATLAS_FILE: src/lib/v9/analysis/jackpot-lab.ts===
+// ============================================================
+// JACKPOT LAB v9.4 — backtester aligned with the v9.4 engine:
+// pick = argmax(dc); SOF tracked as a flag only.
+// Validates rho=-0.08 against historical rounds (Rule 1 evidence).
+// ============================================================
+import { calibrateLambda } from '../math/calibration';
+import { buildScoreMatrix, outcomeProbs } from '../math/dixon-coles';
+import type { Outcome } from '../atlas-types';
+
+export interface HistoryRow {
+  date: string; home: string; away: string;
+  h: number; d: number; a: number;
+  result?: 'H' | 'D' | 'A';
+}
+
+export function parseHistory(text: string): HistoryRow[] {
+  const rows: HistoryRow[] = [];
+  for (const line of text.split(/\n/)) {
+    const p = line.split('|').map((x) => x.trim());
+    if (p.length < 6) continue;
+    const h = parseFloat(p[3]), d = parseFloat(p[4]), a = parseFloat(p[5]);
+    if (!(h > 1 && d > 1 && a > 1)) continue;
+    const res = (p[6] ?? '').toUpperCase();
+    rows.push({
+      date: p[0], home: p[1], away: p[2], h, d, a,
+      result: res === 'H' || res === 'D' || res === 'A' ? (res as 'H' | 'D' | 'A') : undefined,
+    });
+  }
+  return rows;
+}
+
+const toOutcome = (r: 'H' | 'D' | 'A'): Outcome => (r === 'H' ? 'home' : r === 'D' ? 'draw' : 'away');
+
+// v9.4 engine logic: argmax pick, SOF flag only
+function probsAt(r: HistoryRow, rho: number) {
+  const cal = calibrateLambda(r.h, r.d, r.a, rho);
+  const { raw, sum } = buildScoreMatrix(cal.lambdaH, cal.lambdaA, rho);
+  const p = outcomeProbs(raw, sum);
+  const sof = Math.abs(p.home - p.away) < 0.06 || (r.d < r.h && r.d < r.a);
+  let pick: Outcome = 'home';
+  if (p.draw >= p.home && p.draw >= p.away) pick = 'draw';
+  if (p.away > p.home && p.away > p.draw) pick = 'away';
+  return { p, pick, sof };
+}
+
+export interface RhoPoint { rho: number; brier: number; hitRate: number; }
+export interface RoundReport {
+  round: string; legs: number; resolved: number; hits: number;
+  predAllHit: number; actualAllHit: boolean | null;
+}
+export interface LabReport {
+  total: number; resolved: number;
+  hits: number; hitRate: number; brier: number; logLoss: number;
+  drawRate: number;
+  sofTriggers: number; sofResolved: number; sofHits: number; sofDraws: number;
+  pickDist: { home: number; draw: number; away: number };
+  rhoTable: RhoPoint[]; bestRho: number; currentRhoBrier: number;
+  rounds: RoundReport[];
+}
+
+export function runJackpotLab(rows: HistoryRow[]): LabReport {
+  const RHO = -0.08;
+  const resolvedRows = rows.filter((r) => r.result);
+  let hits = 0, brier = 0, logLoss = 0, draws = 0;
+  let sofT = 0, sofR = 0, sofH = 0, sofD = 0;
+  const pickDist = { home: 0, draw: 0, away: 0 };
+
+  for (const r of rows) {
+    const { p, pick, sof } = probsAt(r, RHO);
+    pickDist[pick]++;
+    if (sof) sofT++;
+    if (!r.result) continue;
+    const o = toOutcome(r.result);
+    if (sof) { sofR++; if (pick === o) sofH++; if (o === 'draw') sofD++; }
+    hits += pick === o ? 1 : 0;
+    draws += o === 'draw' ? 1 : 0;
+    for (const k of ['home', 'draw', 'away'] as Outcome[])
+      brier += (p[k] - (k === o ? 1 : 0)) ** 2;
+    logLoss += -Math.log(Math.max(p[o], 1e-9));
+  }
+  const resolved = resolvedRows.length;
+
+  const rhoTable: RhoPoint[] = [];
+  for (let rho = -0.20; rho <= 0.001; rho += 0.04) {
+    let b = 0, h = 0;
+    for (const r of resolvedRows) {
+      const { p, pick } = probsAt(r, rho);
+      const o = toOutcome(r.result!);
+      for (const k of ['home', 'draw', 'away'] as Outcome[])
+        b += (p[k] - (k === o ? 1 : 0)) ** 2;
+      h += pick === o ? 1 : 0;
+    }
+    rhoTable.push({
+      rho: Math.round(rho * 100) / 100,
+      brier: resolved ? b / resolved : 0,
+      hitRate: resolved ? h / resolved : 0,
+    });
+  }
+  const best = [...rhoTable].sort((x, y) => x.brier - y.brier)[0];
+
+  const byRound = new Map<string, HistoryRow[]>();
+  for (const r of rows) {
+    const arr = byRound.get(r.date) ?? [];
+    arr.push(r);
+    byRound.set(r.date, arr);
+  }
+  const rounds: RoundReport[] = [...byRound.entries()].map(([round, rs]) => {
+    const res = rs.filter((x) => x.result);
+    let pred = 1, hh = 0;
+    for (const x of res) {
+      const { p, pick } = probsAt(x, RHO);
+      pred *= p[pick];
+      hh += pick === toOutcome(x.result!) ? 1 : 0;
+    }
+    return {
+      round, legs: rs.length, resolved: res.length, hits: hh, predAllHit: pred,
+      actualAllHit: res.length === rs.length && res.length > 0 ? hh === res.length : null,
+    };
+  });
+
+  return {
+    total: rows.length, resolved,
+    hits, hitRate: resolved ? hits / resolved : 0,
+    brier: resolved ? brier / resolved : 0,
+    logLoss: resolved ? logLoss / resolved : 0,
+    drawRate: resolved ? draws / resolved : 0,
+    sofTriggers: sofT, sofResolved: sofR, sofHits: sofH, sofDraws: sofD,
+    pickDist, rhoTable,
+    bestRho: best?.rho ?? RHO,
+    currentRhoBrier: rhoTable.find((x) => x.rho === RHO)?.brier ?? 0,
+    rounds,
+  };
+}

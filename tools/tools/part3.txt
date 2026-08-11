@@ -1,0 +1,1212 @@
+===ATLAS_FILE: src/components/atlas/ProbBar.tsx===
+'use client';
+export default function ProbBar({ label, value, barClass, textClass, compare }: {
+  label: string; value: number; barClass: string; textClass: string; compare?: number;
+}) {
+  return (
+    <div className="space-y-0.5">
+      <div className="flex justify-between text-[11px]">
+        <span className={textClass}>{label}</span>
+        <span className="text-zinc-300 tabular-nums">
+          {(value * 100).toFixed(1)}%
+          {compare !== undefined && (
+            <span className={`ml-1 ${value > compare ? 'text-emerald-400' : 'text-zinc-500'}`}>
+              ({value > compare ? '+' : ''}{((value - compare) * 100).toFixed(1)})
+            </span>
+          )}
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+        <div className={`h-full ${barClass}`} style={{ width: `${Math.min(value * 100, 100)}%` }} />
+      </div>
+    </div>
+  );
+}
+===ATLAS_FILE: src/components/atlas/DecorrBadge.tsx===
+'use client';
+export default function DecorrBadge({ score, hasRealSpot }: { score: number; hasRealSpot: boolean }) {
+  const cls = score >= 15 ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+    : score > 5 ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+    : 'bg-zinc-800 text-zinc-400 border-zinc-700';
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${cls}`}>
+      DECORR {score.toFixed(0)}{hasRealSpot ? ' • SPOT' : ''}
+    </span>
+  );
+}
+===ATLAS_FILE: src/components/atlas/ThresholdGate.tsx===
+'use client';
+export default function ThresholdGate({ pass, confidence, simMultiplier }: {
+  pass: boolean; confidence: number; simMultiplier?: number;
+}) {
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold border ${
+      pass ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+           : 'bg-rose-500/15 text-rose-400 border-rose-500/30'}`}>
+      {pass ? '✓ THRESHOLD PASS' : '✗ THRESHOLD FAIL'} · conf {(confidence * 100).toFixed(0)}%
+      {simMultiplier !== undefined && simMultiplier < 1 && (
+        <span className="text-orange-400">sim ×{simMultiplier.toFixed(2)}</span>
+      )}
+    </span>
+  );
+}
+===ATLAS_FILE: src/components/atlas/PortfolioRow.tsx===
+'use client';
+import type { PortfolioOutcome } from '@/lib/v9/atlas-types';
+import { fmtPct } from '@/lib/v9/ui/atlas-colors';
+
+export default function PortfolioRow({ portfolio }: { portfolio: PortfolioOutcome[] }) {
+  if (!portfolio.length) return null;
+  return (
+    <div className="grid grid-cols-3 gap-1.5">
+      {portfolio.map((p) => (
+        <div key={p.outcome} className={`rounded-lg border p-1.5 text-center ${
+          p.isMaxEp ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-zinc-800 bg-zinc-900/50'}`}>
+          <div className="text-[10px] uppercase text-zinc-500">{p.outcome}{p.isMaxEp ? ' ★' : ''}</div>
+          <div className={`text-xs tabular-nums ${p.ev > 0 ? 'text-emerald-400' : 'text-zinc-500'}`}>
+            EV {p.ev > 0 ? '+' : ''}{fmtPct(p.ev)}
+          </div>
+          <div className="text-[10px] text-zinc-400 tabular-nums">
+            K {fmtPct(p.stake)} · SR {p.sharpe.toFixed(2)}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+===ATLAS_FILE: src/components/atlas/AIAnalysisPanel.tsx===
+'use client';
+import type { Match, AtlasAnalysis, AtlasJackpotAnalysis } from '@/lib/v9/atlas-types';
+import type { ExtendedMarkets } from '@/lib/v9/markets/extended-markets';
+import { ENGINE_COLORS, fmtPct, fmtOdds } from '@/lib/v9/ui/atlas-colors';
+import ProbBar from './ProbBar';
+import DecorrBadge from './DecorrBadge';
+import ThresholdGate from './ThresholdGate';
+
+interface Props {
+  match: Match;
+  math: AtlasAnalysis;
+  ext: ExtendedMarkets | null;
+  phi: number;
+  isJackpot: boolean;
+}
+
+function Section({ n, title, color, children }: {
+  n: string; title: string; color: string; children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <span className={`text-[10px] font-bold ${color}`}>{n}</span>
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">{title}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+export default function AIAnalysisPanel({ match, math, ext, phi, isJackpot }: Props) {
+  const C = ENGINE_COLORS[isJackpot ? 'jackpot' : 'standard'];
+  const jp = isJackpot ? (math as AtlasJackpotAnalysis) : null;
+  const best = !isJackpot ? math.portfolio.find((p) => p.isMaxEp) : null;
+  const oddsMap = { home: parseFloat(match.h), draw: parseFloat(match.d), away: parseFloat(match.a) };
+
+  return (
+    <div className="space-y-2.5">
+      {/* 1 — AI PERFORMANCE */}
+      <div className={`rounded-lg border p-3 ${C.border} bg-zinc-900/60`}>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className={`text-sm font-bold ${C.accent}`}>ATLAS v9.0 {isJackpot ? 'JACKPOT' : 'STANDARD'} ENGINE</div>
+            <div className="text-[11px] text-zinc-500">
+              ρ = {isJackpot ? '-0.08 · parlay-max' : '-0.13 · EV-max'} · 13 layers · hybrid Bayesian calibration
+            </div>
+          </div>
+          <div className={`text-2xl font-bold tabular-nums ${C.accent}`}>{fmtPct(math.confidence)}</div>
+        </div>
+      </div>
+
+      {/* 2 — REAL-WORLD CONTEXT */}
+      <Section n="02" title="Real-World Context" color="text-zinc-400">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-zinc-300">
+          <span>League: <b>{match.league || '—'}</b></span>
+          <span>Kickoff: <b>{match.kickoff || '—'}</b></span>
+          <span>Odds: <b>{match.h} / {match.d} / {match.a}</b></span>
+          <span>Margin: <b className={math.margin > 0.08 ? 'text-amber-400' : ''}>{fmtPct(math.margin)}</b></span>
+          <span>λH: <b>{math.calibration.lambdaH.toFixed(2)}</b> · λA: <b>{math.calibration.lambdaA.toFixed(2)}</b></span>
+          <span>Calibration: <b>{math.calibration.hybrid.source}</b></span>
+        </div>
+      </Section>
+
+      {/* 3 — ATLAS VERDICT */}
+      <Section n="03" title="ATLAS Verdict" color={math.thresholdPass ? 'text-emerald-400' : 'text-rose-400'}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`rounded-md px-2.5 py-1 text-sm font-bold uppercase ${C.badge}`}>{math.pick}</span>
+          <ThresholdGate pass={math.thresholdPass} confidence={math.confidence} simMultiplier={math.sim?.confMultiplier} />
+          {!isJackpot && <DecorrBadge score={math.decorrelation.score} hasRealSpot={math.decorrelation.hasRealSpot} />}
+          {math.sofTriggered && <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-[10px] text-violet-400 border border-violet-500/30">SOF v4</span>}
+          {math.decorrOverride && <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] text-emerald-400 border border-emerald-500/30">DECORR FLIP</span>}
+        </div>
+        {jp && (
+          <div className="mt-2 text-[11px] text-zinc-400">
+            Parlay score <b className="tabular-nums">{jp.parlayScore.toFixed(3)}</b>
+            {jp.upsetVulnerable && <span className="ml-2 text-rose-400">⚠ upset vulnerable — secondary: {jp.secondaryPick.toUpperCase()} {fmtPct(jp.secondaryProb)}</span>}
+            {jp.skippedDecorrOverride && (
+              <span className="ml-2 text-zinc-500">skipped EV flip → {jp.skippedDecorrOverride.wouldFlipTo.toUpperCase()} (+{fmtPct(jp.skippedDecorrOverride.evLost)} EV sacrificed for parlay)</span>
+            )}
+          </div>
+        )}
+      </Section>
+
+      {/* 4 — PROBABILITY BREAKDOWN (engine colors, Rule 2) */}
+      <Section n="04" title="Probability Breakdown" color={C.accent}>
+        <div className="space-y-2">
+          <ProbBar label="HOME" value={math.probs.home} barClass={C.barHome} textClass={C.home} compare={math.bookProbs.home} />
+          <ProbBar label="DRAW" value={math.probs.draw} barClass={C.barDraw} textClass={C.draw} compare={math.bookProbs.draw} />
+          <ProbBar label="AWAY" value={math.probs.away} barClass={C.barAway} textClass={C.away} compare={math.bookProbs.away} />
+        </div>
+      </Section>
+
+      {/* 5 — BEST BET */}
+      <Section n="05" title="Best Bet" color="text-emerald-400">
+        {best ? (
+          <div className="text-xs text-zinc-300">
+            <b className="text-emerald-400 uppercase">{best.outcome}</b> @ {fmtOdds(oddsMap[best.outcome])}
+            {' '}· EV <b>{fmtPct(best.ev)}</b> · edge per unit variance {best.sharpe.toFixed(2)}
+          </div>
+        ) : (
+          <div className="text-xs text-zinc-500">
+            No positive-EV 1X2 bet at current model probabilities{isJackpot ? ' (jackpot mode optimizes parlay probability, not EV)' : ''}.
+          </div>
+        )}
+      </Section>
+
+      {/* 6 — STAKING ADVICE */}
+      {!isJackpot && (
+        <Section n="06" title="Staking Advice" color="text-teal-400">
+          <div className="grid grid-cols-3 gap-2 text-center text-xs">
+            {math.portfolio.map((p) => (
+              <div key={p.outcome} className="rounded bg-zinc-900 p-1.5 border border-zinc-800">
+                <div className="text-[10px] uppercase text-zinc-500">{p.outcome}</div>
+                <div className="tabular-nums text-teal-300">{fmtPct(p.stake)} stake</div>
+                <div className="text-[10px] text-zinc-500">Sharpe {p.sharpe.toFixed(2)}</div>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* 7 — KEY MARKETS */}
+      {ext && (
+        <Section n="07" title="Key Markets" color="text-sky-400">
+          <div className="flex flex-wrap gap-1.5">
+            {([['O2.5', ext.pOver25], ['BTTS', ext.pBttsYes], ['1X', ext.p1X], ['Draw', ext.pDraw], ['U2.5', 1 - ext.pOver25]] as [string, number][]).map(([l, p]) => (
+              <span key={l} className="rounded-full bg-sky-500/10 border border-sky-500/25 px-2 py-0.5 text-[11px] text-sky-300 tabular-nums">
+                {l} {fmtPct(p)}
+              </span>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* 8 — MOST LIKELY SCORES */}
+      <Section n="08" title="Most Likely Scores" color="text-violet-400">
+        <div className="grid grid-cols-4 gap-1.5">
+          {math.scoreMatrix.slice(0, 4).map((s) => (
+            <div key={s.s} className="rounded bg-zinc-900 border border-zinc-800 p-1.5 text-center">
+              <div className="text-sm font-bold text-violet-300">{s.s}</div>
+              <div className="h-1 mt-1 rounded bg-zinc-800"><div className="h-full bg-violet-500 rounded" style={{ width: `${Math.min(100, s.p * 600)}%` }} /></div>
+              <div className="text-[10px] text-zinc-500 tabular-nums">{fmtPct(s.p)}</div>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      {/* 9a — TOP POSITIVE-EV BETS */}
+      {ext && ext.topEvBets.length > 0 && (
+        <Section n="9a" title="Top Positive-EV Bets" color="text-emerald-400">
+          <table className="w-full text-[11px]">
+            <tbody>
+              {ext.topEvBets.map((b) => (
+                <tr key={b.key} className="border-b border-zinc-800/60 last:border-0">
+                  <td className="py-1 text-zinc-300">{b.label}</td>
+                  <td className="py-1 text-right tabular-nums text-zinc-400">@{b.odds.toFixed(2)}</td>
+                  <td className="py-1 text-right tabular-nums text-emerald-400 font-semibold">+{fmtPct(b.ev)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      )}
+
+      {/* 9b — MONTE CARLO */}
+      {math.sim && (
+        <Section n="9b" title="Monte Carlo Cross-Check" color="text-orange-400">
+          <div className="text-[11px] text-zinc-300 space-y-0.5">
+            <div>{math.sim.n.toLocaleString()} sims (adaptive) · mean goals <b>{math.sim.meanGoals.toFixed(2)}</b> ± {math.sim.sdGoals.toFixed(2)}</div>
+            <div>
+              Disagreement: <b className={
+                math.sim.disagreement === 'none' ? 'text-emerald-400' :
+                math.sim.disagreement === 'low' ? 'text-yellow-400' :
+                math.sim.disagreement === 'medium' ? 'text-orange-400' : 'text-rose-400'
+              }>{math.sim.disagreement.toUpperCase()}</b> · max Δ {fmtPct(math.sim.maxDelta)}
+              {math.sim.recommendation !== 'none' && <> · rec: <b>{math.sim.recommendation}</b></>}
+            </div>
+            <div className="text-zinc-500">Sim is a cross-check only — grid model remains primary (Rule 5)</div>
+          </div>
+        </Section>
+      )}
+
+      {/* 9c — KEY RISK */}
+      <Section n="9c" title="Key Risk" color="text-rose-400">
+        <ul className="text-[11px] text-zinc-400 space-y-0.5 list-disc list-inside">
+          {math.marginWarning.msg && <li className="text-amber-400">{math.marginWarning.msg}</li>}
+          {jp?.upsetVulnerable && <li className="text-rose-400">Home/away within 5% — pick is fragile for parlay use.</li>}
+          {!math.thresholdPass && <li className="text-rose-400">Confidence below φ={phi} — suppress or reduce stake.</li>}
+          {math.sim && math.sim.disagreement === 'high' && <li className="text-orange-400">Monte Carlo strongly disagrees with grid calibration.</li>}
+          {!math.marginWarning.msg && math.thresholdPass && <li>No material warnings for this match.</li>}
+        </ul>
+      </Section>
+    </div>
+  );
+}
+===ATLAS_FILE: src/components/atlas/SmartPasteOdds.tsx===
+'use client';
+import { useMemo, useState } from 'react';
+import { parseSmartPaste } from '@/lib/v9/parsers/odds-parser';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+
+export default function SmartPasteOdds({ matchId, onClose }: { matchId: string; onClose: () => void }) {
+  const [text, setText] = useState('');
+  const updateOdds = useAtlasStore((s) => s.updateOdds);
+  // Rule 3: parse on EVERY keystroke — badge updates live
+  const parsed = useMemo(() => parseSmartPaste(text), [text]);
+
+  const apply = () => {
+    Object.entries(parsed.odds).forEach(([k, v]) => updateOdds(matchId, k, v));
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-900 p-4" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-zinc-200">Smart Paste Odds</h3>
+          <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold tabular-nums ${
+            parsed.count > 0 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-800 text-zinc-500'}`}>
+            {parsed.count} market{parsed.count === 1 ? '' : 's'} detected
+          </span>
+        </div>
+        <textarea
+          value={text} onChange={(e) => setText(e.target.value)}
+          placeholder={'Paste odds text, e.g.\nOver 2.5: 1.85\nBTTS Yes: 1.72\n1/1: 4.20'}
+          className="h-40 w-full rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-300 focus:border-blue-500 focus:outline-none"
+        />
+        {parsed.unmatched.length > 0 && (
+          <div className="mt-1 text-[10px] text-amber-500">{parsed.unmatched.length} unmatched line(s)</div>
+        )}
+        <div className="mt-3 flex justify-end gap-2">
+          <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800">Cancel</button>
+          <button onClick={apply} disabled={!parsed.count}
+            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40 hover:bg-blue-500">
+            Apply {parsed.count} odds
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+===ATLAS_FILE: src/components/atlas/ScrapeButton.tsx===
+'use client';
+import { useState } from 'react';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import { emptyMatch } from '@/lib/v9/atlas-types';
+
+export default function ScrapeButton() {
+  const [url, setUrl] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const scrape = async () => {
+    if (!url.trim()) return;
+    setBusy(true); setMsg(null);
+    try {
+      const res = await fetch('/api/scrape-sportpesa', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'scrape failed');
+      const fixtures = data.fixtures ?? [];
+      if (fixtures.length > 0) {
+        useAtlasStore.setState((s) => ({
+          matches: [
+            ...s.matches,
+            ...fixtures.map((f: { home?: string; away?: string; h?: number; d?: number; a?: number }) => ({
+              ...emptyMatch(crypto.randomUUID()),
+              home: String(f.home ?? 'Home'), away: String(f.away ?? 'Away'),
+              h: String(f.h ?? ''), d: String(f.d ?? ''), a: String(f.a ?? ''),
+            })),
+          ],
+        }));
+      }
+      setMsg(`Extracted ${fixtures.length} fixtures${fixtures.length === 0 ? ' — use Smart Paste instead' : ''}`);
+    } catch (e) {
+      setMsg(`Scrape failed: ${e instanceof Error ? e.message : 'error'}. Use Smart Paste instead.`);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="SportPesa URL…"
+        className="w-56 rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-300 focus:border-blue-500 focus:outline-none" />
+      <button onClick={scrape} disabled={busy}
+        className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 disabled:opacity-40">
+        {busy ? 'Scraping…' : 'Scrape'}
+      </button>
+      {msg && <span className="text-[10px] text-zinc-500">{msg}</span>}
+    </div>
+  );
+}
+===ATLAS_FILE: src/components/atlas/MatchCard.tsx===
+'use client';
+import { useEffect, useMemo, useState } from 'react';
+import type { Match, Outcome, AtlasAnalysis, AtlasJackpotAnalysis } from '@/lib/v9/atlas-types';
+import { DC_RHO_STANDARD, DC_RHO_JACKPOT } from '@/lib/v9/atlas-types';
+import { atlasAnalyseV9 } from '@/lib/v9/engines/standard';
+import { atlasAnalyseJackpotV9 } from '@/lib/v9/engines/jackpot';
+import { computeExtendedMarketsV9 } from '@/lib/v9/markets/extended-markets';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import { ENGINE_COLORS, fmtPct } from '@/lib/v9/ui/atlas-colors';
+import ProbBar from './ProbBar';
+import DecorrBadge from './DecorrBadge';
+import PortfolioRow from './PortfolioRow';
+import ThresholdGate from './ThresholdGate';
+import AIAnalysisPanel from './AIAnalysisPanel';
+import SmartPasteOdds from './SmartPasteOdds';
+
+export default function MatchCard({ match }: { match: Match }) {
+  const phi = useAtlasStore((s) => s.phi);
+  const standardParams = useAtlasStore((s) => s.standardParams);
+  const updateMatch = useAtlasStore((s) => s.updateMatch);
+  const removeMatch = useAtlasStore((s) => s.removeMatch);
+  const toggleEngine = useAtlasStore((s) => s.toggleEngine);
+  const submitResult = useAtlasStore((s) => s.submitResult);
+  const recordPrediction = useAtlasStore((s) => s.recordPrediction);
+  const result = useAtlasStore((s) => s.results[match.id]);
+
+  const [showAI, setShowAI] = useState(false);
+  const [showMarkets, setShowMarkets] = useState(false);
+  const [showPaste, setShowPaste] = useState(false);
+
+  const isJackpot = match.gameType === 'jackpot';
+  const C = ENGINE_COLORS[match.gameType];
+
+  const math = useMemo<AtlasAnalysis | null>(() => {
+    try {
+      return isJackpot ? atlasAnalyseJackpotV9(match, phi) : atlasAnalyseV9(match, phi, standardParams);
+    } catch { return null; }
+  }, [match, phi, standardParams, isJackpot]);
+
+  // Extended markets: Standard engine ONLY (jackpot disables them)
+  const ext = useMemo(() => {
+    if (!math || isJackpot) return null;
+    return computeExtendedMarketsV9(
+      math.scoreMatrix, math.calibration.lambdaH, math.calibration.lambdaA,
+      DC_RHO_STANDARD, match.userOdds,
+    );
+  }, [math, isJackpot, match.userOdds]);
+
+  useEffect(() => {
+    if (math) recordPrediction(match, math);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [math?.pick, math?.confidence]);
+
+  const jp = isJackpot && math ? (math as AtlasJackpotAnalysis) : null;
+  const validOdds = parseFloat(match.h) > 1 && parseFloat(match.d) > 1 && parseFloat(match.a) > 1;
+
+  return (
+    <div className={`rounded-xl border ${C.border} bg-zinc-900/60 p-4 space-y-3`}>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold text-zinc-100">
+            {match.home || 'Home'} <span className="text-zinc-500">vs</span> {match.away || 'Away'}
+          </div>
+          <div className="text-[11px] text-zinc-500">{match.league || 'No league'} {match.kickoff ? `· ${match.kickoff}` : ''}</div>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${C.badge}`}>
+            {isJackpot ? `JACKPOT ρ=${DC_RHO_JACKPOT}` : `STANDARD ρ=${DC_RHO_STANDARD}`}
+          </span>
+          <span className="text-[9px] text-zinc-500">
+            {isJackpot
+              ? 'Decorrelation: DISABLED · SOF: ON · Learning: OFF'
+              : 'Decorrelation: ON · SOF: ON · Learning: ON'}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        {(['h', 'd', 'a'] as const).map((k) => (
+          <input key={k} value={match[k]} placeholder={k.toUpperCase()}
+            onChange={(e) => updateMatch(match.id, { [k]: e.target.value } as Partial<Match>)}
+            className="w-16 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-center text-xs text-zinc-200 focus:border-blue-500 focus:outline-none" />
+        ))}
+        <button onClick={() => toggleEngine(match.id)}
+          className="rounded-lg border border-zinc-700 px-2 py-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800">
+          ⇄ {isJackpot ? 'to Standard' : 'to Jackpot'}
+        </button>
+        <button onClick={() => setShowPaste(true)}
+          className="rounded-lg border border-zinc-700 px-2 py-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800">Smart Paste</button>
+        <button onClick={() => removeMatch(match.id)}
+          className="ml-auto rounded-lg px-2 py-1.5 text-[10px] text-zinc-600 hover:text-rose-400">✕ remove</button>
+      </div>
+
+      {math && validOdds ? (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <ProbBar label="HOME" value={math.probs.home} barClass={C.barHome} textClass={C.home} compare={math.bookProbs.home} />
+            <ProbBar label="DRAW" value={math.probs.draw} barClass={C.barDraw} textClass={C.draw} compare={math.bookProbs.draw} />
+            <ProbBar label="AWAY" value={math.probs.away} barClass={C.barAway} textClass={C.away} compare={math.bookProbs.away} />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`rounded-md px-2.5 py-1 text-xs font-bold uppercase ${C.badge}`}>Pick: {math.pick}</span>
+            <ThresholdGate pass={math.thresholdPass} confidence={math.confidence} simMultiplier={math.sim?.confMultiplier} />
+            {!isJackpot && <DecorrBadge score={math.decorrelation.score} hasRealSpot={math.decorrelation.hasRealSpot} />}
+            {math.sofTriggered && <span className="rounded-full bg-violet-500/15 border border-violet-500/30 px-2 py-0.5 text-[10px] text-violet-400">SOF</span>}
+            {jp?.upsetVulnerable &&
+              <span className="rounded-full bg-rose-500/15 border border-rose-500/30 px-2 py-0.5 text-[10px] text-rose-400">UPSET RISK</span>}
+          </div>
+
+          {!isJackpot && <PortfolioRow portfolio={math.portfolio} />}
+          {math.marginWarning.msg && <div className="text-[11px] text-amber-400">⚠ {math.marginWarning.msg}</div>}
+
+          <div className="flex gap-2">
+            <button onClick={() => setShowAI(!showAI)}
+              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-[11px] text-zinc-300 hover:bg-zinc-800">
+              {showAI ? '▾' : '▸'} AI Analysis (9 sections)
+            </button>
+            {ext && (
+              <button onClick={() => setShowMarkets(!showMarkets)}
+                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-[11px] text-zinc-300 hover:bg-zinc-800">
+                {showMarkets ? '▾' : '▸'} Extended Markets ({ext.groups.length})
+              </button>
+            )}
+          </div>
+
+          {showAI && <AIAnalysisPanel match={match} math={math} ext={ext} phi={phi} isJackpot={isJackpot} />}
+
+          {showMarkets && ext && (
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              {ext.groups.map((g) => (
+                <div key={g.name} className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-2">
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">{g.name}</div>
+                  <div className="space-y-0.5">
+                    {g.items.slice(0, 9).map((it) => (
+                      <div key={it.key} className="flex justify-between text-[11px]">
+                        <span className="text-zinc-400">{it.label}</span>
+                        <span className="tabular-nums">
+                          <span className="text-zinc-300">{fmtPct(it.prob)}</span>
+                          {it.odds > 1 && <span className={`ml-1.5 ${it.ev > 0 ? 'text-emerald-400 font-semibold' : 'text-zinc-600'}`}>
+                            @{it.odds.toFixed(2)} {it.ev > 0 ? `+${fmtPct(it.ev)}` : ''}
+                          </span>}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="text-xs text-zinc-600">Enter valid 1X2 odds (all &gt; 1.00) to run analysis.</div>
+      )}
+
+      <div className="flex items-center gap-2 border-t border-zinc-800 pt-2">
+        <span className="text-[10px] uppercase text-zinc-500">Result:</span>
+        {(['home', 'draw', 'away'] as Outcome[]).map((o) => (
+          <button key={o} onClick={() => submitResult(match.id, o)}
+            className={`rounded px-2 py-1 text-[10px] font-semibold uppercase ${
+              result === o ? 'bg-emerald-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}>
+            {o === 'home' ? 'H' : o === 'draw' ? 'D' : 'A'}
+          </button>
+        ))}
+        {result && <span className="text-[10px] text-emerald-400">logged: {result}</span>}
+      </div>
+
+      {showPaste && <SmartPasteOdds matchId={match.id} onClose={() => setShowPaste(false)} />}
+    </div>
+  );
+}
+===ATLAS_FILE: src/components/atlas/QuickViewTables.tsx===
+'use client';
+import { useMemo } from 'react';
+import type { Match, AtlasAnalysis, AtlasJackpotAnalysis } from '@/lib/v9/atlas-types';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import { atlasAnalyseV9 } from '@/lib/v9/engines/standard';
+import { atlasAnalyseJackpotV9 } from '@/lib/v9/engines/jackpot';
+import { fmtPct } from '@/lib/v9/ui/atlas-colors';
+
+interface Row { m: Match; jp: AtlasJackpotAnalysis | null; std: AtlasAnalysis | null; }
+
+export default function QuickViewTables() {
+  const matches = useAtlasStore((s) => s.matches);
+  const phi = useAtlasStore((s) => s.phi);
+  const standardParams = useAtlasStore((s) => s.standardParams);
+
+  const rows = useMemo<Row[]>(() => matches
+    .filter((m) => parseFloat(m.h) > 1 && parseFloat(m.d) > 1 && parseFloat(m.a) > 1)
+    .map((m) => m.gameType === 'jackpot'
+      ? { m, jp: atlasAnalyseJackpotV9(m, phi), std: null }
+      : { m, jp: null, std: atlasAnalyseV9(m, phi, standardParams) }),
+  [matches, phi, standardParams]);
+
+  const jp = rows.filter((r) => r.jp !== null);
+  const std = rows.filter((r) => r.std !== null);
+  const th = 'py-1.5 px-2 text-left text-[10px] uppercase tracking-wide text-zinc-500';
+  const td = 'py-1.5 px-2 text-xs text-zinc-300 tabular-nums';
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div className="rounded-xl border border-amber-500/25 bg-zinc-900/60 p-3">
+        <h3 className="mb-2 text-xs font-bold text-amber-400">JACKPOT — Parlay Probability Table</h3>
+        <table className="w-full">
+          <thead><tr><th className={th}>Match</th><th className={th}>Pick</th><th className={th}>Prob</th><th className={th}>Parlay ln(p)</th><th className={th}>Risk</th></tr></thead>
+          <tbody>
+            {jp.map(({ m, jp: j }) => (
+              <tr key={m.id} className="border-t border-zinc-800">
+                <td className={td}>{m.home} v {m.away}</td>
+                <td className={`${td} font-semibold uppercase text-amber-400`}>{j!.pick}</td>
+                <td className={td}>{fmtPct(j!.confidence)}</td>
+                <td className={td}>{j!.parlayScore.toFixed(3)}</td>
+                <td className={td}>{j!.upsetVulnerable ? <span className="text-rose-400">upset</span> : '—'}</td>
+              </tr>
+            ))}
+            {!jp.length && <tr><td className={td} colSpan={5}>No jackpot matches yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="rounded-xl border border-blue-500/25 bg-zinc-900/60 p-3">
+        <h3 className="mb-2 text-xs font-bold text-blue-400">STANDARD — EV Maximizing Table</h3>
+        <table className="w-full">
+          <thead><tr><th className={th}>Match</th><th className={th}>Pick</th><th className={th}>Conf</th><th className={th}>Best EV</th><th className={th}>Gate</th></tr></thead>
+          <tbody>
+            {std.map(({ m, std: st }) => {
+              const best = st!.portfolio.filter((p) => p.ev > 0).sort((x, y) => y.ev - x.ev)[0];
+              return (
+                <tr key={m.id} className="border-t border-zinc-800">
+                  <td className={td}>{m.home} v {m.away}</td>
+                  <td className={`${td} font-semibold uppercase text-blue-400`}>{st!.pick}</td>
+                  <td className={td}>{fmtPct(st!.confidence)}</td>
+                  <td className={td}>{best ? <span className="text-emerald-400">+{fmtPct(best.ev)}</span> : '—'}</td>
+                  <td className={td}>{st!.thresholdPass ? <span className="text-emerald-400">✓</span> : <span className="text-rose-400">✗</span>}</td>
+                </tr>
+              );
+            })}
+            {!std.length && <tr><td className={td} colSpan={5}>No standard matches yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+===ATLAS_FILE: src/components/atlas/SummaryPanel.tsx===
+'use client';
+import { useMemo } from 'react';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import { atlasAnalyseV9 } from '@/lib/v9/engines/standard';
+import { fmtPct } from '@/lib/v9/ui/atlas-colors';
+
+export default function SummaryPanel() {
+  const matches = useAtlasStore((s) => s.matches);
+  const phi = useAtlasStore((s) => s.phi);
+  const standardParams = useAtlasStore((s) => s.standardParams);
+
+  const summary = useMemo(() => {
+    const std = matches.filter((m) => m.gameType === 'standard' && parseFloat(m.h) > 1 && parseFloat(m.d) > 1 && parseFloat(m.a) > 1);
+    let totalEV = 0, totalVar = 0, totalStake = 0;
+    const dist = { home: 0, draw: 0, away: 0 };
+    for (const m of std) {
+      try {
+        const a = atlasAnalyseV9(m, phi, standardParams);
+        dist[a.pick]++;
+        const best = a.portfolio.find((p) => p.isMaxEp);
+        if (best) { totalEV += best.ev * best.stake; totalVar += best.varPerUnit * best.stake ** 2; totalStake += best.stake; }
+      } catch { /* skip invalid */ }
+    }
+    return { count: std.length, dist, roundSharpe: totalVar > 0 ? totalEV / Math.sqrt(totalVar) : 0, totalStake };
+  }, [matches, phi, standardParams]);
+
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+      <h3 className="mb-2 text-xs font-bold text-zinc-300">PORTFOLIO SUMMARY</h3>
+      <div className="grid grid-cols-4 gap-3 text-center">
+        <div><div className="text-lg font-bold text-zinc-100">{summary.count}</div><div className="text-[10px] text-zinc-500">standard legs</div></div>
+        <div><div className="text-lg font-bold text-blue-400">{summary.dist.home}·{summary.dist.draw}·{summary.dist.away}</div><div className="text-[10px] text-zinc-500">H·D·A pick mix</div></div>
+        <div><div className="text-lg font-bold text-teal-300">{summary.roundSharpe.toFixed(2)}</div><div className="text-[10px] text-zinc-500">round Sharpe</div></div>
+        <div><div className="text-lg font-bold text-emerald-400">{fmtPct(summary.totalStake)}</div><div className="text-[10px] text-zinc-500">total Kelly exposure</div></div>
+      </div>
+    </div>
+  );
+}
+===ATLAS_FILE: src/components/atlas/SimulationPanel.tsx===
+'use client';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import { fmtPct } from '@/lib/v9/ui/atlas-colors';
+
+export default function SimulationPanel() {
+  const matches = useAtlasStore((s) => s.matches);
+  const simResults = useAtlasStore((s) => s.simResults);
+  const runAllSims = useAtlasStore((s) => s.runAllSims);
+  const runParlaySim = useAtlasStore((s) => s.runParlaySim);
+  const parlaySim = useAtlasStore((s) => s.parlaySim);
+  const simsRunning = useAtlasStore((s) => s.simsRunning);
+
+  const rows = matches.flatMap((m) => {
+    const sim = simResults[m.id];
+    return sim ? [{ m, sim }] : [];
+  }).sort((a, b) => b.sim.maxDelta - a.sim.maxDelta);
+
+  const dColor = (d: string) =>
+    d === 'none' ? 'text-emerald-400' : d === 'low' ? 'text-yellow-400' : d === 'medium' ? 'text-orange-400' : 'text-rose-400';
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2">
+        <button onClick={runAllSims} disabled={simsRunning}
+          className="rounded-lg bg-orange-600 px-4 py-2 text-xs font-semibold text-white hover:bg-orange-500 disabled:opacity-40">
+          {simsRunning ? 'Running…' : '▶ Run All Sims (adaptive antithetic MC)'}
+        </button>
+        <button onClick={runParlaySim}
+          className="rounded-lg bg-amber-600 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-500">
+          🎰 Simulate Jackpot Parlay
+        </button>
+      </div>
+
+      <div className="overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-900/60">
+        <table className="w-full">
+          <thead>
+            <tr className="text-left text-[10px] uppercase text-zinc-500">
+              <th className="px-3 py-2">Match</th><th className="px-3 py-2">Sims</th>
+              <th className="px-3 py-2">H / D / A</th><th className="px-3 py-2">Max Δ</th>
+              <th className="px-3 py-2">Disagreement</th><th className="px-3 py-2">Rec</th><th className="px-3 py-2">Conf ×</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ m, sim }) => (
+              <tr key={m.id} className="border-t border-zinc-800 text-xs">
+                <td className="px-3 py-2 text-zinc-300">{m.home} v {m.away}</td>
+                <td className="px-3 py-2 tabular-nums text-zinc-400">{sim.n.toLocaleString()}</td>
+                <td className="px-3 py-2 tabular-nums text-zinc-300">
+                  {fmtPct(sim.probs.home)} / {fmtPct(sim.probs.draw)} / {fmtPct(sim.probs.away)}
+                </td>
+                <td className="px-3 py-2 tabular-nums text-zinc-300">{fmtPct(sim.maxDelta)}</td>
+                <td className={`px-3 py-2 font-semibold ${dColor(sim.disagreement)}`}>{sim.disagreement.toUpperCase()}</td>
+                <td className="px-3 py-2 text-zinc-400">{sim.recommendation}</td>
+                <td className="px-3 py-2 tabular-nums text-orange-300">×{sim.confMultiplier.toFixed(2)}</td>
+              </tr>
+            ))}
+            {!rows.length && <tr><td className="px-3 py-4 text-xs text-zinc-600" colSpan={7}>No simulations run yet. Sims are a cross-check only — the grid model stays primary.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {parlaySim && (
+        <div className="rounded-xl border border-amber-500/25 bg-zinc-900/60 p-4">
+          <h3 className="mb-2 text-xs font-bold text-amber-400">PARLAY SIMULATION — {parlaySim.legs} legs</h3>
+          <div className="grid grid-cols-3 gap-4 text-center">
+            <div><div className="text-2xl font-bold text-amber-300">{fmtPct(parlaySim.allCorrect)}</div><div className="text-[10px] text-zinc-500">all legs correct</div></div>
+            <div><div className="text-2xl font-bold text-zinc-100">{parlaySim.expectedCorrect.toFixed(1)}</div><div className="text-[10px] text-zinc-500">expected correct</div></div>
+            <div><div className="text-sm font-bold text-zinc-100">{parlaySim.legProbs.map((p) => fmtPct(p)).join(' · ')}</div><div className="text-[10px] text-zinc-500">per-leg hit rates</div></div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {Object.entries(parlaySim.cumulative).map(([x, p]) => (
+              <span key={x} className="rounded-full bg-zinc-800 px-2.5 py-1 text-[10px] text-zinc-300 tabular-nums">≥{x} correct: {fmtPct(p)}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+===ATLAS_FILE: src/components/atlas/LearningPanel.tsx===
+'use client';
+import { useMemo, useState } from 'react';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import { parseBetSlip, computeMarketStats, MANUAL_MARKET_OPTIONS } from '@/lib/v9/parsers/bet-slip-parser';
+import type { BetMarket } from '@/lib/v9/parsers/bet-slip-parser';
+import type { LearnedParams } from '@/lib/v9/learning/bayesian-learning';
+import { fmtPct } from '@/lib/v9/ui/atlas-colors';
+
+function ParamsCard({ title, params, color, onRecalibrate }: {
+  title: string; params: LearnedParams; color: string; onRecalibrate: () => void;
+}) {
+  return (
+    <div className={`rounded-xl border ${color} bg-zinc-900/60 p-3`}>
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="text-xs font-bold">{title}</h3>
+        <button onClick={onRecalibrate} className="rounded-lg bg-zinc-800 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-700">
+          Force Recalibrate
+        </button>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-center text-xs">
+        <div><div className="font-bold text-zinc-100">{params.totalResolved}</div><div className="text-[9px] text-zinc-500">resolved</div></div>
+        <div><div className="font-bold text-zinc-100">{fmtPct(params.hitRates.overall)}</div><div className="text-[9px] text-zinc-500">hit rate</div></div>
+        <div><div className={`font-bold ${params.trend === 'improving' ? 'text-emerald-400' : params.trend === 'declining' ? 'text-rose-400' : 'text-zinc-300'}`}>{params.trend}</div><div className="text-[9px] text-zinc-500">trend</div></div>
+      </div>
+      <div className="mt-2 grid grid-cols-4 gap-1 text-[10px] text-zinc-400 tabular-nums">
+        <span>drawBoost {params.drawBoost.toFixed(3)}</span>
+        <span>SOF thr {params.sofThreshold.toFixed(3)}</span>
+        <span>ρ adj {params.rhoAdjust.toFixed(3)}</span>
+        <span>upset {params.upsetWeight.toFixed(3)}</span>
+      </div>
+      <div className="mt-1 text-[9px] text-zinc-600">β-binomial posterior · H α={params.posteriors.home.alpha.toFixed(1)} · D α={params.posteriors.draw.alpha.toFixed(1)} · A α={params.posteriors.away.alpha.toFixed(1)}</div>
+    </div>
+  );
+}
+
+export default function LearningPanel() {
+  const predictions = useAtlasStore((s) => s.predictions);
+  const standardParams = useAtlasStore((s) => s.standardParams);
+  const jackpotParams = useAtlasStore((s) => s.jackpotParams);
+  const forceRecalibrate = useAtlasStore((s) => s.forceRecalibrate);
+  const clearLearningData = useAtlasStore((s) => s.clearLearningData);
+  const addFeedback = useAtlasStore((s) => s.addFeedback);
+  const feedback = useAtlasStore((s) => s.feedback);
+
+  const [slipText, setSlipText] = useState('');
+  const parsedBets = useMemo(() => parseBetSlip(slipText), [slipText]);
+  const marketStats = useMemo(() => computeMarketStats(parsedBets), [parsedBets]);
+
+  const [form, setForm] = useState<{
+    matchLabel: string; market: BetMarket; pick: string; odds: string;
+    result: 'won' | 'lost' | 'pending';
+  }>({ matchLabel: '', market: '1x2', pick: 'Home', odds: '1.85', result: 'pending' });
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-2">
+        <ParamsCard title="STANDARD PARAMS (beta-binomial, time-decay)" params={standardParams} color="border-blue-500/25" onRecalibrate={() => forceRecalibrate('standard')} />
+        <ParamsCard title="JACKPOT PARAMS (isolated — parlay purity)" params={jackpotParams} color="border-amber-500/25" onRecalibrate={() => forceRecalibrate('jackpot')} />
+      </div>
+
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-zinc-400">
+          {predictions.length} predictions · {predictions.filter((p) => p.result).length} resolved · auto-recalibration every 5 resolved (never below 5)
+        </div>
+        <button onClick={clearLearningData} className="rounded-lg border border-rose-500/30 px-3 py-1.5 text-[11px] text-rose-400 hover:bg-rose-500/10">
+          Reset All Learning Data
+        </button>
+      </div>
+
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-xs font-bold text-zinc-300">BET SLIP IMPORT (23 market types)</h3>
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums ${parsedBets.length ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-800 text-zinc-500'}`}>
+            {parsedBets.length} bets detected
+          </span>
+        </div>
+        <textarea value={slipText} onChange={(e) => setSlipText(e.target.value)}
+          placeholder={'Paste bet history…\nArsenal vs Chelsea\nPick: Over 2.5 (1.85) ✅'}
+          className="h-24 w-full rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-300 focus:border-blue-500 focus:outline-none" />
+        {parsedBets.length > 0 && (
+          <>
+            <button
+              onClick={() => { parsedBets.forEach((b) => addFeedback({ matchLabel: b.teams, market: b.market, pick: b.pick, odds: b.odds, result: b.result })); setSlipText(''); }}
+              className="mt-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500">
+              Import {parsedBets.length} bets
+            </button>
+            {marketStats.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {marketStats.map((s) => (
+                  <span key={s.market} className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-300 tabular-nums">
+                    {s.market}: {s.wins}/{s.total} ({fmtPct(s.hitRate)})
+                  </span>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+        <h3 className="mb-2 text-xs font-bold text-zinc-300">MANUAL BET ENTRY</h3>
+        <div className="flex flex-wrap gap-2">
+          <input value={form.matchLabel} onChange={(e) => setForm({ ...form, matchLabel: e.target.value })} placeholder="Match"
+            className="w-40 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-300 focus:border-blue-500 focus:outline-none" />
+          <select value={form.market} onChange={(e) => {
+            const opt = MANUAL_MARKET_OPTIONS.find((o) => o.value === e.target.value)!;
+            setForm({ ...form, market: e.target.value as BetMarket, pick: opt.picks[0] });
+          }} className="rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-300">
+            {MANUAL_MARKET_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <select value={form.pick} onChange={(e) => setForm({ ...form, pick: e.target.value })}
+            className="rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-300">
+            {(MANUAL_MARKET_OPTIONS.find((o) => o.value === form.market)?.picks ?? []).map((p) => <option key={p}>{p}</option>)}
+          </select>
+          <input value={form.odds} onChange={(e) => setForm({ ...form, odds: e.target.value })} placeholder="Odds"
+            className="w-20 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-300 focus:border-blue-500 focus:outline-none" />
+          <select value={form.result} onChange={(e) => setForm({ ...form, result: e.target.value as 'won' | 'lost' | 'pending' })}
+            className="rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-300">
+            <option value="pending">Pending</option><option value="won">Won</option><option value="lost">Lost</option>
+          </select>
+          <button
+            onClick={() => { addFeedback({ matchLabel: form.matchLabel || 'Manual', market: form.market, pick: form.pick, odds: parseFloat(form.odds) || 1, result: form.result }); }}
+            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500">
+            Add Bet
+          </button>
+        </div>
+      </div>
+
+      {feedback.length > 0 && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+          <h3 className="mb-2 text-xs font-bold text-zinc-300">BET HISTORY ({feedback.length})</h3>
+          <div className="max-h-60 space-y-1 overflow-y-auto">
+            {[...feedback].reverse().slice(0, 50).map((f) => (
+              <div key={f.id} className="flex items-center justify-between rounded bg-zinc-950/60 px-2 py-1 text-[11px]">
+                <span className="text-zinc-300">{f.matchLabel} · {f.market} · {f.pick}</span>
+                <span className="tabular-nums">
+                  <span className="text-zinc-400">@{f.odds.toFixed(2)}</span>{' '}
+                  <span className={f.result === 'won' ? 'text-emerald-400' : f.result === 'lost' ? 'text-rose-400' : 'text-zinc-500'}>{f.result}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+===ATLAS_FILE: src/components/atlas/CalibrationPanel.tsx===
+'use client';
+import { useMemo } from 'react';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import { evaluatePredictions } from '@/lib/v9/analysis/backtester';
+import type { CalibrationMetrics } from '@/lib/v9/analysis/backtester';
+import { fmtPct } from '@/lib/v9/ui/atlas-colors';
+
+function MetricsCard({ title, m, color }: { title: string; m: CalibrationMetrics; color: string }) {
+  return (
+    <div className={`rounded-xl border ${color} bg-zinc-900/60 p-3`}>
+      <h3 className="mb-2 text-xs font-bold">{title}</h3>
+      {m.n < 5 ? (
+        <div className="text-xs text-zinc-600">Need ≥5 resolved predictions (have {m.n}).</div>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div><div className="text-lg font-bold text-zinc-100">{m.brier.toFixed(3)}</div><div className="text-[9px] text-zinc-500">Brier (lower better, 1X2 baseline 0.667)</div></div>
+            <div><div className="text-lg font-bold text-zinc-100">{m.logLoss.toFixed(3)}</div><div className="text-[9px] text-zinc-500">Log loss (baseline 1.099)</div></div>
+            <div><div className="text-lg font-bold text-emerald-400">{fmtPct(m.accuracy)}</div><div className="text-[9px] text-zinc-500">pick accuracy (n={m.n})</div></div>
+          </div>
+          <div className="mt-3">
+            <div className="mb-1 text-[10px] uppercase text-zinc-500">Reliability diagram (model conf vs realized hit rate)</div>
+            <div className="space-y-1">
+              {m.reliability.filter((b) => b.n > 0).map((b, i) => (
+                <div key={i} className="flex items-center gap-2 text-[10px]">
+                  <span className="w-16 tabular-nums text-zinc-500">{(b.lo * 100).toFixed(0)}–{(b.hi * 100).toFixed(0)}%</span>
+                  <div className="relative h-2 flex-1 rounded bg-zinc-800">
+                    <div className="absolute h-full rounded bg-blue-500/60" style={{ width: `${b.model * 100}%` }} />
+                    <div className="absolute h-full w-0.5 bg-emerald-400" style={{ left: `${b.actual * 100}%` }} />
+                  </div>
+                  <span className="w-10 tabular-nums text-zinc-400">n={b.n}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export default function CalibrationPanel() {
+  const predictions = useAtlasStore((s) => s.predictions);
+  const recalibrationLog = useAtlasStore((s) => s.recalibrationLog);
+  const std = useMemo(() => evaluatePredictions(predictions.filter((p) => p.gameType === 'standard')), [predictions]);
+  const jp = useMemo(() => evaluatePredictions(predictions.filter((p) => p.gameType === 'jackpot')), [predictions]);
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-2">
+        <MetricsCard title="STANDARD CALIBRATION" m={std} color="border-blue-500/25" />
+        <MetricsCard title="JACKPOT CALIBRATION" m={jp} color="border-amber-500/25" />
+      </div>
+      {recalibrationLog.length > 0 && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+          <h3 className="mb-2 text-xs font-bold text-zinc-300">RECALIBRATION LOG</h3>
+          <div className="max-h-40 space-y-1 overflow-y-auto">
+            {[...recalibrationLog].reverse().map((l, i) => (
+              <div key={i} className="text-[11px] text-zinc-400">
+                <span className="text-zinc-600">{new Date(l.at).toLocaleString()}</span>{' '}
+                <span className={l.gameType === 'standard' ? 'text-blue-400' : 'text-amber-400'}>[{l.gameType}]</span> {l.message}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+===ATLAS_FILE: src/components/atlas/APIPicksPanel.tsx===
+'use client';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+
+export default function APIPicksPanel() {
+  const apiPicks = useAtlasStore((s) => s.apiPicks);
+  const loading = useAtlasStore((s) => s.apiPicksLoading);
+  const error = useAtlasStore((s) => s.apiPicksError);
+  const fetchApiPicks = useAtlasStore((s) => s.fetchApiPicks);
+  const importApiPicks = useAtlasStore((s) => s.importApiPicks);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <button onClick={fetchApiPicks} disabled={loading}
+          className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-40">
+          {loading ? 'Fetching…' : '⟳ Fetch Live Picks (The Odds API)'}
+        </button>
+        {apiPicks.length > 0 && (
+          <button onClick={importApiPicks} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500">
+            ⤓ Import {apiPicks.length} matches
+          </button>
+        )}
+        {error && <span className="text-xs text-rose-400">{error} (set ODDS_API_KEY env var)</span>}
+      </div>
+      {apiPicks.length > 0 && (
+        <div className="overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-900/60">
+          <table className="w-full text-xs">
+            <thead><tr className="text-left text-[10px] uppercase text-zinc-500">
+              <th className="px-3 py-2">Match</th><th className="px-3 py-2">League</th>
+              <th className="px-3 py-2">H/D/A</th><th className="px-3 py-2">Books</th><th className="px-3 py-2">Value gap</th>
+            </tr></thead>
+            <tbody>
+              {apiPicks.map((p) => (
+                <tr key={p.id} className="border-t border-zinc-800">
+                  <td className="px-3 py-2 text-zinc-200">{p.home} v {p.away}</td>
+                  <td className="px-3 py-2 text-zinc-400">{p.league}</td>
+                  <td className="px-3 py-2 tabular-nums text-zinc-300">{p.h} / {p.d} / {p.a}</td>
+                  <td className="px-3 py-2 tabular-nums text-zinc-400">{p.bookmakers}</td>
+                  <td className="px-3 py-2 tabular-nums text-emerald-400">{(p.valueGap * 100).toFixed(1)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+===ATLAS_FILE: src/app/atlas/page.tsx===
+'use client';
+import { useRef, useState } from 'react';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import MatchCard from '@/components/atlas/MatchCard';
+import QuickViewTables from '@/components/atlas/QuickViewTables';
+import SummaryPanel from '@/components/atlas/SummaryPanel';
+import SimulationPanel from '@/components/atlas/SimulationPanel';
+import LearningPanel from '@/components/atlas/LearningPanel';
+import CalibrationPanel from '@/components/atlas/CalibrationPanel';
+import APIPicksPanel from '@/components/atlas/APIPicksPanel';
+import ScrapeButton from '@/components/atlas/ScrapeButton';
+
+const TABS = ['Matches', 'Quick View', 'Simulations', 'Learning', 'Backtest', 'API Picks'] as const;
+
+export default function AtlasPage() {
+  const [tab, setTab] = useState<(typeof TABS)[number]>('Matches');
+  const matches = useAtlasStore((s) => s.matches);
+  const phi = useAtlasStore((s) => s.phi);
+  const setPhi = useAtlasStore((s) => s.setPhi);
+  const addMatch = useAtlasStore((s) => s.addMatch);
+  const exportSession = useAtlasStore((s) => s.exportSession);
+  const importSession = useAtlasStore((s) => s.importSession);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const download = () => {
+    const blob = new Blob([exportSession()], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `atlas_v9_session_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+  };
+
+  return (
+    <div className="min-h-screen bg-zinc-950 p-4 md:p-6 text-zinc-100">
+      <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight">
+            ATLAS <span className="text-blue-400">v9.0</span>
+            <span className="ml-2 text-xs font-normal text-zinc-500">
+              Enhanced · hybrid Bayesian calibration · copula HT/FT · adaptive MC · beta-binomial learning
+            </span>
+          </h1>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs">
+            φ threshold <b className="tabular-nums text-blue-400">{phi.toFixed(2)}</b>
+            <input type="range" min={0} max={0.3} step={0.01} value={phi}
+              onChange={(e) => setPhi(parseFloat(e.target.value))} className="w-24 accent-blue-500" />
+          </label>
+          <button onClick={addMatch} className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold hover:bg-blue-500">+ Add Match</button>
+          <button onClick={download} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">Export</button>
+          <button onClick={() => fileRef.current?.click()} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">Import</button>
+          <input ref={fileRef} type="file" accept=".json" className="hidden" onChange={async (e) => {
+            const f = e.target.files?.[0];
+            if (f) importSession(await f.text());
+          }} />
+        </div>
+      </header>
+
+      <nav className="mb-4 flex flex-wrap items-center gap-1.5">
+        {TABS.map((t) => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+              tab === t ? 'bg-zinc-100 text-zinc-950' : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}>
+            {t}
+          </button>
+        ))}
+        <div className="ml-auto"><ScrapeButton /></div>
+      </nav>
+
+      {tab === 'Matches' && (
+        <div className="space-y-4">
+          <SummaryPanel />
+          {matches.length === 0 && (
+            <div className="rounded-xl border border-dashed border-zinc-800 p-10 text-center text-sm text-zinc-600">
+              No matches yet. Click “+ Add Match”, scrape SportPesa, or import API picks.
+            </div>
+          )}
+          {matches.map((m) => <MatchCard key={m.id} match={m} />)}
+        </div>
+      )}
+      {tab === 'Quick View' && <QuickViewTables />}
+      {tab === 'Simulations' && <SimulationPanel />}
+      {tab === 'Learning' && <LearningPanel />}
+      {tab === 'Backtest' && <CalibrationPanel />}
+      {tab === 'API Picks' && <APIPicksPanel />}
+
+      <footer className="mt-8 text-center text-[10px] text-zinc-700">
+        ATLAS v9.0 · 100% client-side computation · Standard ρ=-0.13 / Jackpot ρ=-0.08 · MC is a cross-check, never the primary model
+      </footer>
+    </div>
+  );
+}
+===ATLAS_FILE: src/app/api/daily-picks/route.ts===
+// Live odds via The Odds API — GET cached 3h, respects free tier (500 req/mo)
+import { NextResponse } from 'next/server';
+
+export const runtime = 'nodejs';
+const CACHE_TTL = 3 * 60 * 60 * 1000;
+let cache: { at: number; picks: unknown[] } | null = null;
+
+const SPORTS = ['soccer_epl', 'soccer_spain_la_liga', 'soccer_italy_serie_a',
+  'soccer_germany_bundesliga', 'soccer_france_ligue_one', 'soccer_uefa_champs_league'];
+
+interface OddsOutcome { name: string; price: number; }
+interface OddsMarket { key: string; outcomes: OddsOutcome[]; }
+interface OddsBook { home_team?: string; away_team?: string; markets?: OddsMarket[]; }
+interface OddsEvent {
+  id: string; home_team: string; away_team: string; sport_title: string;
+  commence_time: string; bookmakers: { key: string; markets: OddsMarket[] }[];
+}
+
+export async function GET() {
+  const key = process.env.ODDS_API_KEY;
+  if (!key) return NextResponse.json({ picks: [], error: 'ODDS_API_KEY not set' }, { status: 500 });
+  if (cache && Date.now() - cache.at < CACHE_TTL) return NextResponse.json({ picks: cache.picks, cached: true });
+
+  const picks: object[] = [];
+  for (const sport of SPORTS) {
+    try {
+      const res = await fetch(
+        `https://api.the-odds-api.com/v4/sports/${sport}/odds?apiKey=${key}&regions=eu&markets=h2h&oddsFormat=decimal`,
+      );
+      if (!res.ok) continue;
+      const events: OddsEvent[] = await res.json();
+      for (const ev of events) {
+        const book = ev.bookmakers?.[0];
+        const mkt = book?.markets?.find((m) => m.key === 'h2h');
+        if (!mkt) continue;
+        const o: Record<string, number> = {};
+        for (const out of mkt.outcomes) o[out.name] = out.price;
+        const h = o[ev.home_team], a = o[ev.away_team], d = o['Draw'];
+        if (!h || !a || !d) continue;
+        const bestHome = Math.max(...ev.bookmakers.map((b) =>
+          b.markets.find((m) => m.key === 'h2h')?.outcomes.find((x) => x.name === ev.home_team)?.price ?? h));
+        picks.push({
+          id: ev.id, home: ev.home_team, away: ev.away_team,
+          league: ev.sport_title, kickoff: ev.commence_time,
+          h: String(h), d: String(d), a: String(a),
+          bookmakers: ev.bookmakers.length,
+          valueGap: bestHome / h - 1,
+        });
+      }
+    } catch { /* skip failing sport */ }
+  }
+  cache = { at: Date.now(), picks };
+  return NextResponse.json({ picks, cached: false });
+}
+===ATLAS_FILE: src/app/api/scrape-sportpesa/route.ts===
+// SportPesa scraper — 3 strategies: embedded JSON, DOM patterns, regex fallback
+import { NextResponse } from 'next/server';
+
+export const runtime = 'nodejs';
+
+interface Fixture { home: string; away: string; h: number; d: number; a: number; }
+
+export async function POST(req: Request) {
+  try {
+    const { url } = await req.json();
+    if (!url || !/^https?:\/\//.test(url)) return NextResponse.json({ error: 'invalid url' }, { status: 400 });
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const html = await res.text();
+
+    // Strategy 1: embedded JSON
+    const jsonMatch = html.match(/window\.__NUXT__\s*=\s*(\{.+?\});<\/script>/s) ||
+                      html.match(/<script[^>]*type="application\/json"[^>]*>(\{.+?\})<\/script>/s);
+    if (jsonMatch) {
+      try {
+        const data = JSON.parse(jsonMatch[1]);
+        const fixtures = extractFixtures(data);
+        if (fixtures.length) return NextResponse.json({ fixtures, strategy: 'json' });
+      } catch { /* fall through */ }
+    }
+    // Strategy 2/3: regex over HTML
+    const fixtures: Fixture[] = [];
+    const rowRe = /data-home="([^"]+)"[^>]*data-away="([^"]+)"[^>]*data-odds="([\d.,]+)"/g;
+    let m;
+    while ((m = rowRe.exec(html)) !== null) {
+      const odds = m[3].split(',').map(parseFloat);
+      if (odds.length === 3) fixtures.push({ home: m[1], away: m[2], h: odds[0], d: odds[1], a: odds[2] });
+    }
+    return NextResponse.json({ fixtures, strategy: fixtures.length ? 'regex' : 'none' });
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : 'scrape failed' }, { status: 500 });
+  }
+}
+
+function extractFixtures(obj: unknown, acc: Fixture[] = []): Fixture[] {
+  if (!obj || typeof obj !== 'object') return acc;
+  if (Array.isArray(obj)) { obj.forEach((x) => extractFixtures(x, acc)); return acc; }
+  const rec = obj as Record<string, unknown>;
+  if (rec.homeTeam && rec.awayTeam && rec.odds) {
+    const o = rec.odds as Record<string, unknown>;
+    acc.push({
+      home: String(rec.homeTeam), away: String(rec.awayTeam),
+      h: Number(o.home ?? 0), d: Number(o.draw ?? 0), a: Number(o.away ?? 0),
+    });
+  }
+  Object.values(rec).forEach((v) => extractFixtures(v, acc));
+  return acc.slice(0, 50);
+}
+===ATLAS_FILE: src/app/page.tsx===
+'use client';
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+
+export default function Home() {
+  const router = useRouter();
+  useEffect(() => { router.replace('/atlas'); }, [router]);
+  return null;
+}

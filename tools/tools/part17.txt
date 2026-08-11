@@ -1,0 +1,385 @@
+===ATLAS_FILE: src/lib/v9/analysis/jackpot-lab.ts===
+// ============================================================
+// JACKPOT LAB v9.5 — round-level (true ticket) validation.
+// v9.5: rounds grouped by the slip's calendar date (first token),
+// so each row is a real 13-17 leg jackpot ticket.
+// Engine logic: argmax pick, SOF flag only (v9.4). Rule 1 sweep kept.
+// ============================================================
+import { calibrateLambda } from '../math/calibration';
+import { buildScoreMatrix, outcomeProbs } from '../math/dixon-coles';
+import type { Outcome } from '../atlas-types';
+
+export interface HistoryRow {
+  date: string; home: string; away: string;
+  h: number; d: number; a: number;
+  result?: 'H' | 'D' | 'A';
+}
+
+export function parseHistory(text: string): HistoryRow[] {
+  const rows: HistoryRow[] = [];
+  for (const line of text.split(/\n/)) {
+    const p = line.split('|').map((x) => x.trim());
+    if (p.length < 6) continue;
+    const h = parseFloat(p[3]), d = parseFloat(p[4]), a = parseFloat(p[5]);
+    if (!(h > 1 && d > 1 && a > 1)) continue;
+    const res = (p[6] ?? '').toUpperCase();
+    rows.push({
+      date: p[0], home: p[1], away: p[2], h, d, a,
+      result: res === 'H' || res === 'D' || res === 'A' ? (res as 'H' | 'D' | 'A') : undefined,
+    });
+  }
+  return rows;
+}
+
+const toOutcome = (r: 'H' | 'D' | 'A'): Outcome => (r === 'H' ? 'home' : r === 'D' ? 'draw' : 'away');
+
+function probsAt(r: HistoryRow, rho: number) {
+  const cal = calibrateLambda(r.h, r.d, r.a, rho);
+  const { raw, sum } = buildScoreMatrix(cal.lambdaH, cal.lambdaA, rho);
+  const p = outcomeProbs(raw, sum);
+  const sof = Math.abs(p.home - p.away) < 0.06 || (r.d < r.h && r.d < r.a);
+  let pick: Outcome = 'home';
+  if (p.draw >= p.home && p.draw >= p.away) pick = 'draw';
+  if (p.away > p.home && p.away > p.draw) pick = 'away';
+  return { p, pick, sof };
+}
+
+export interface RhoPoint { rho: number; brier: number; hitRate: number; }
+export interface RoundReport {
+  round: string; legs: number; resolved: number; hits: number;
+  predAllHit: number; actualAllHit: boolean | null;
+}
+export interface LabReport {
+  total: number; resolved: number;
+  hits: number; hitRate: number; brier: number; logLoss: number;
+  drawRate: number;
+  sofTriggers: number; sofResolved: number; sofHits: number; sofDraws: number;
+  pickDist: { home: number; draw: number; away: number };
+  rhoTable: RhoPoint[]; bestRho: number; currentRhoBrier: number;
+  rounds: RoundReport[];
+}
+
+export function runJackpotLab(rows: HistoryRow[]): LabReport {
+  const RHO = -0.08;
+  const resolvedRows = rows.filter((r) => r.result);
+  let hits = 0, brier = 0, logLoss = 0, draws = 0;
+  let sofT = 0, sofR = 0, sofH = 0, sofD = 0;
+  const pickDist = { home: 0, draw: 0, away: 0 };
+
+  for (const r of rows) {
+    const { p, pick, sof } = probsAt(r, RHO);
+    pickDist[pick]++;
+    if (sof) sofT++;
+    if (!r.result) continue;
+    const o = toOutcome(r.result);
+    if (sof) { sofR++; if (pick === o) sofH++; if (o === 'draw') sofD++; }
+    hits += pick === o ? 1 : 0;
+    draws += o === 'draw' ? 1 : 0;
+    for (const k of ['home', 'draw', 'away'] as Outcome[])
+      brier += (p[k] - (k === o ? 1 : 0)) ** 2;
+    logLoss += -Math.log(Math.max(p[o], 1e-9));
+  }
+  const resolved = resolvedRows.length;
+
+  const rhoTable: RhoPoint[] = [];
+  for (let rho = -0.20; rho <= 0.001; rho += 0.04) {
+    let b = 0, h = 0;
+    for (const r of resolvedRows) {
+      const { p, pick } = probsAt(r, rho);
+      const o = toOutcome(r.result!);
+      for (const k of ['home', 'draw', 'away'] as Outcome[])
+        b += (p[k] - (k === o ? 1 : 0)) ** 2;
+      h += pick === o ? 1 : 0;
+    }
+    rhoTable.push({
+      rho: Math.round(rho * 100) / 100,
+      brier: resolved ? b / resolved : 0,
+      hitRate: resolved ? h / resolved : 0,
+    });
+  }
+  const best = [...rhoTable].sort((x, y) => x.brier - y.brier)[0];
+
+  // v9.5: group by calendar date = the actual jackpot ticket
+  const byRound = new Map<string, HistoryRow[]>();
+  for (const r of rows) {
+    const key = r.date.split(' ')[0];
+    const arr = byRound.get(key) ?? [];
+    arr.push(r);
+    byRound.set(key, arr);
+  }
+  const rounds: RoundReport[] = [...byRound.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([round, rs]) => {
+      const res = rs.filter((x) => x.result);
+      let pred = 1, hh = 0;
+      for (const x of res) {
+        const { p, pick } = probsAt(x, RHO);
+        pred *= p[pick];
+        hh += pick === toOutcome(x.result!) ? 1 : 0;
+      }
+      return {
+        round, legs: rs.length, resolved: res.length, hits: hh, predAllHit: pred,
+        actualAllHit: res.length === rs.length && res.length > 0 ? hh === res.length : null,
+      };
+    });
+
+  return {
+    total: rows.length, resolved,
+    hits, hitRate: resolved ? hits / resolved : 0,
+    brier: resolved ? brier / resolved : 0,
+    logLoss: resolved ? logLoss / resolved : 0,
+    drawRate: resolved ? draws / resolved : 0,
+    sofTriggers: sofT, sofResolved: sofR, sofHits: sofH, sofDraws: sofD,
+    pickDist, rhoTable,
+    bestRho: best?.rho ?? RHO,
+    currentRhoBrier: rhoTable.find((x) => x.rho === RHO)?.brier ?? 0,
+    rounds,
+  };
+}
+===ATLAS_FILE: src/components/atlas/JackpotLabPanel.tsx===
+'use client';
+import { useState } from 'react';
+import { parseHistory, runJackpotLab } from '@/lib/v9/analysis/jackpot-lab';
+import type { LabReport } from '@/lib/v9/analysis/jackpot-lab';
+import { fmtPct } from '@/lib/v9/ui/atlas-colors';
+
+export default function JackpotLabPanel() {
+  const [text, setText] = useState('');
+  const [report, setReport] = useState<LabReport | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const loadBundled = async () => {
+    try {
+      const r = await fetch('/data/jackpot_history.txt');
+      setText(await r.text());
+    } catch { /* ignore */ }
+  };
+
+  const run = () => {
+    setBusy(true);
+    setTimeout(() => {
+      setReport(runJackpotLab(parseHistory(text)));
+      setBusy(false);
+    }, 30);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-amber-500/25 bg-zinc-900/60 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-xs font-bold text-amber-400">
+            JACKPOT LAB — historical backtest (format: date | home | away | H | X | A | result H/D/A or ?)
+          </h3>
+          <button onClick={loadBundled} className="rounded-lg border border-zinc-700 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-800">
+            Load bundled dataset
+          </button>
+        </div>
+        <textarea value={text} onChange={(e) => setText(e.target.value)}
+          placeholder={'2026-05-02 17:00 | Newcastle | Brighton | 2.50 | 3.50 | 2.65 | H'}
+          className="h-40 w-full rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-[10px] text-zinc-300 focus:border-amber-500 focus:outline-none" />
+        <div className="mt-2 flex items-center gap-3">
+          <button onClick={run} disabled={busy || !text.trim()}
+            className="rounded-lg bg-amber-600 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-500 disabled:opacity-40">
+            {busy ? 'Crunching…' : '▶ Run Backtest'}
+          </button>
+          <span className="text-[10px] text-zinc-500">
+            Rounds = actual jackpot tickets (grouped by slip date). Rows with “?” drive pick distribution only.
+          </span>
+        </div>
+      </div>
+
+      {report && (
+        <>
+          <div className="grid grid-cols-3 gap-3 md:grid-cols-6">
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
+              <div className="text-lg font-bold text-zinc-100">{report.resolved}/{report.total}</div>
+              <div className="text-[9px] text-zinc-500">resolved games</div>
+            </div>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
+              <div className="text-lg font-bold text-amber-400">{fmtPct(report.hitRate)}</div>
+              <div className="text-[9px] text-zinc-500">jackpot pick hit rate</div>
+            </div>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
+              <div className="text-lg font-bold text-zinc-100">{report.brier.toFixed(3)}</div>
+              <div className="text-[9px] text-zinc-500">Brier (baseline 0.667)</div>
+            </div>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
+              <div className="text-lg font-bold text-violet-400">{fmtPct(report.drawRate)}</div>
+              <div className="text-[9px] text-zinc-500">actual draw rate (spec ~32%)</div>
+            </div>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
+              <div className="text-lg font-bold text-zinc-100">{report.sofHits}/{report.sofResolved}</div>
+              <div className="text-[9px] text-zinc-500">tight-game (SOF flag) hits</div>
+            </div>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
+              <div className="text-lg font-bold text-zinc-100">{report.pickDist.home}·{report.pickDist.draw}·{report.pickDist.away}</div>
+              <div className="text-[9px] text-zinc-500">pick mix H·D·A</div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+            <h3 className="mb-2 text-xs font-bold text-zinc-300">ρ RE-DERIVATION SWEEP (Rule 1 evidence)</h3>
+            <div className="grid grid-cols-6 gap-1.5">
+              {report.rhoTable.map((r) => (
+                <div key={r.rho} className={`rounded-lg border p-2 text-center ${
+                  r.rho === report.bestRho ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-zinc-800'}`}>
+                  <div className="text-[10px] text-zinc-500">ρ {r.rho.toFixed(2)}</div>
+                  <div className="text-xs font-bold tabular-nums text-zinc-200">{r.brier.toFixed(3)}</div>
+                  <div className="text-[9px] tabular-nums text-zinc-500">{fmtPct(r.hitRate)} hit</div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-2 text-[10px] text-zinc-500">
+              Best ρ = {report.bestRho.toFixed(2)} · current −0.08 Brier = {report.currentRhoBrier.toFixed(3)}.
+              Rule 1: consider re-derivation ONLY with ≥100 resolved games AND |best − (−0.08)| ≥ 0.04. Below that, keep −0.08.
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-900/60">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-[10px] uppercase text-zinc-500">
+                  <th className="px-3 py-2">Round (ticket)</th><th className="px-3 py-2">Legs</th>
+                  <th className="px-3 py-2">Resolved</th><th className="px-3 py-2">Legs hit</th>
+                  <th className="px-3 py-2">Pred. all-hit</th><th className="px-3 py-2">Actual all-hit</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.rounds.map((r) => (
+                  <tr key={r.round} className="border-t border-zinc-800">
+                    <td className="px-3 py-2 text-zinc-300">{r.round}</td>
+                    <td className="px-3 py-2 tabular-nums text-zinc-400">{r.legs}</td>
+                    <td className="px-3 py-2 tabular-nums text-zinc-400">{r.resolved}</td>
+                    <td className="px-3 py-2 tabular-nums text-zinc-300">{r.hits}/{r.resolved}</td>
+                    <td className="px-3 py-2 tabular-nums text-amber-300">
+                      {r.resolved
+                        ? (r.predAllHit < 0.005 ? `1 in ${Math.round(1 / r.predAllHit).toLocaleString()}` : fmtPct(r.predAllHit))
+                        : '—'}
+                    </td>
+                    <td className="px-3 py-2">
+                      {r.actualAllHit === null ? <span className="text-zinc-600">pending</span>
+                        : r.actualAllHit ? <span className="text-emerald-400">HIT ✔</span>
+                        : <span className="text-rose-400">missed</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+===ATLAS_FILE: src/app/atlas/page.tsx===
+'use client';
+import { useRef, useState } from 'react';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import MatchCard from '@/components/atlas/MatchCard';
+import QuickViewTables from '@/components/atlas/QuickViewTables';
+import SummaryPanel from '@/components/atlas/SummaryPanel';
+import SimulationPanel from '@/components/atlas/SimulationPanel';
+import LearningPanel from '@/components/atlas/LearningPanel';
+import CalibrationPanel from '@/components/atlas/CalibrationPanel';
+import APIPicksPanel from '@/components/atlas/APIPicksPanel';
+import ScreenerPanel from '@/components/atlas/ScreenerPanel';
+import JackpotLabPanel from '@/components/atlas/JackpotLabPanel';
+import ScrapeButton from '@/components/atlas/ScrapeButton';
+
+const TABS = ['Matches', 'Screener', 'Jackpot Lab', 'Quick View', 'Simulations', 'Learning', 'Backtest', 'API Picks'] as const;
+
+export default function AtlasPage() {
+  const [tab, setTab] = useState<(typeof TABS)[number]>('Matches');
+  const matches = useAtlasStore((s) => s.matches);
+  const phi = useAtlasStore((s) => s.phi);
+  const setPhi = useAtlasStore((s) => s.setPhi);
+  const addMatch = useAtlasStore((s) => s.addMatch);
+  const exportSession = useAtlasStore((s) => s.exportSession);
+  const importSession = useAtlasStore((s) => s.importSession);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const download = () => {
+    const blob = new Blob([exportSession()], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `atlas_v9_session_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+  };
+
+  const clearAll = () => {
+    if (window.confirm(`Delete ALL ${matches.length} matches? Results and learning data are kept. This cannot be undone.`)) {
+      useAtlasStore.setState({ matches: [] });
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-zinc-950 p-4 md:p-6 text-zinc-100">
+      <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight">
+            ATLAS <span className="text-blue-400">v9.5</span>
+            <span className="ml-2 text-xs font-normal text-zinc-500">
+              Enhanced · hybrid Bayesian calibration · copula HT/FT · adaptive MC · beta-binomial learning · fixture screener · jackpot lab
+            </span>
+          </h1>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs">
+            φ threshold <b className="tabular-nums text-blue-400">{phi.toFixed(2)}</b>
+            <input type="range" min={0} max={0.3} step={0.01} value={phi}
+              onChange={(e) => setPhi(parseFloat(e.target.value))} className="w-24 accent-blue-500" />
+          </label>
+          <button onClick={addMatch} className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold hover:bg-blue-500">+ Add Match</button>
+          <button onClick={download} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">Export</button>
+          <button onClick={() => fileRef.current?.click()} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">Import</button>
+          <input ref={fileRef} type="file" accept=".json" className="hidden" onChange={async (e) => {
+            const f = e.target.files?.[0];
+            if (f) importSession(await f.text());
+          }} />
+        </div>
+      </header>
+
+      <nav className="mb-4 flex flex-wrap items-center gap-1.5">
+        {TABS.map((t) => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+              tab === t ? 'bg-zinc-100 text-zinc-950' : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}>
+            {t}
+          </button>
+        ))}
+        <div className="ml-auto"><ScrapeButton /></div>
+      </nav>
+
+      {tab === 'Matches' && (
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            {matches.length > 0 && (
+              <button onClick={clearAll}
+                className="rounded-lg border border-rose-500/30 px-3 py-1.5 text-[11px] text-rose-400 hover:bg-rose-500/10">
+                🗑 Clear All Matches
+              </button>
+            )}
+          </div>
+          <SummaryPanel />
+          {matches.length === 0 && (
+            <div className="rounded-xl border border-dashed border-zinc-800 p-10 text-center text-sm text-zinc-600">
+              No matches yet. Click “+ Add Match”, use the Screener to import a fixture list, or import API picks.
+            </div>
+          )}
+          {matches.map((m) => <MatchCard key={m.id} match={m} />)}
+        </div>
+      )}
+      {tab === 'Screener' && <ScreenerPanel />}
+      {tab === 'Jackpot Lab' && <JackpotLabPanel />}
+      {tab === 'Quick View' && <QuickViewTables />}
+      {tab === 'Simulations' && <SimulationPanel />}
+      {tab === 'Learning' && <LearningPanel />}
+      {tab === 'Backtest' && <CalibrationPanel />}
+      {tab === 'API Picks' && <APIPicksPanel />}
+
+      <footer className="mt-8 text-center text-[10px] text-zinc-700">
+        ATLAS v9.5 · 100% client-side computation · Standard ρ=-0.13 / Jackpot ρ=-0.08 · MC is a cross-check, never the primary model
+      </footer>
+    </div>
+  );
+}

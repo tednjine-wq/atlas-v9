@@ -1,0 +1,934 @@
+===ATLAS_FILE: src/lib/v9/markets/extended-markets.ts===
+// ============================================================
+// Extended Markets Engine v9.0 — 23 market groups, 70+ odds keys
+// V8.7 AUDIT FIXES PRESERVED (Knowledge Base 10.1):
+//  • BTTS sums the DC-corrected matrix (NOT independence approx)
+//  • AH quarter-lines use the integer-line push rule (not naive avg)
+//  • AH sign convention: home covers when margin > -line
+// V9.0 UPGRADE: HT/FT uses Gaussian-copula joint refined by IPF
+// to exact analytic HT/FT margins (replaces independent halves)
+// RULE: score matrix computed ONCE upstream, passed in here
+// ============================================================
+import { buildScoreMatrix, outcomeProbs } from '../math/dixon-coles';
+import { poisson } from '../math/poisson';
+import { htftCopulaJoint } from '../math/copula';
+import type { ScoreEntry } from '../atlas-types';
+
+export interface ExtendedMarketItem {
+  key: string; label: string; prob: number;
+  odds: number; ev: number; group: string;
+}
+export interface MarketGroup { name: string; items: ExtendedMarketItem[]; }
+export interface ExtendedMarkets {
+  groups: MarketGroup[];
+  topEvBets: ExtendedMarketItem[];
+  flat: Record<string, number>;
+  pHome: number; pDraw: number; pAway: number;
+  pBttsYes: number; pOver25: number; p1X: number;
+  htft: Record<string, number>;
+}
+
+// ---- AH helper: integer line carries the push (v8.7 fix) ----
+const makeAH = (diff: Map<number, number>) => {
+  const gt = (t: number) => { let s = 0; diff.forEach((p, d) => { if (d > t) s += p; }); return s; };
+  const lt = (t: number) => { let s = 0; diff.forEach((p, d) => { if (d < t) s += p; }); return s; };
+  const eq = (t: number) => diff.get(t) ?? 0;
+  const side = (M: number, dir: 'gt' | 'lt') => {
+    const P = dir === 'gt' ? gt : lt;
+    if (Number.isInteger(M)) return P(M) + 0.5 * eq(M);
+    if (Math.abs(Math.abs(M) % 1 - 0.5) < 1e-9) return P(M); // half line: no push
+    const I = Math.round(M);                                  // quarter line: integer neighbor push
+    return P(I) + 0.5 * eq(I);
+  };
+  return { home: (L: number) => side(-L, 'gt'), away: (L: number) => side(-L, 'lt') };
+};
+
+// ---- HT/FT: copula MC joint + IPF to exact analytic margins ----
+export function htftJointExact(lH: number, lA: number, rho: number, theta = 0.65): Record<string, number> {
+  const fs = buildScoreMatrix(lH, lA, rho);
+  const ft = outcomeProbs(fs.raw, fs.sum);
+  const hs = buildScoreMatrix(lH / 2, lA / 2, rho);
+  const ht = outcomeProbs(hs.raw, hs.sum);
+  const mc = htftCopulaJoint(lH, lA, rho, theta, 20000, 7).combos;
+  const K = ['1', 'X', '2'];
+  const M = K.map((hk) => K.map((fk) => Math.max(mc[`${hk}_${fk}`] ?? 0.01, 1e-9)));
+  const rowT = [ht.home, ht.draw, ht.away];
+  const colT = [ft.home, ft.draw, ft.away];
+  for (let it = 0; it < 30; it++) {          // iterative proportional fitting
+    for (let r = 0; r < 3; r++) {
+      const s = M[r][0] + M[r][1] + M[r][2];
+      for (let c = 0; c < 3; c++) M[r][c] *= rowT[r] / s;
+    }
+    for (let c = 0; c < 3; c++) {
+      const s = M[0][c] + M[1][c] + M[2][c];
+      for (let r = 0; r < 3; r++) M[r][c] *= colT[c] / s;
+    }
+  }
+  const out: Record<string, number> = {};
+  K.forEach((hk, r) => K.forEach((fk, c) => { out[`${hk}_${fk}`] = M[r][c]; }));
+  return out;
+}
+
+export function computeExtendedMarketsV9(
+  matrix: ScoreEntry[], lH: number, lA: number, rho: number,
+  userOdds: Record<string, number>,
+): ExtendedMarkets {
+  const P: number[][] = Array.from({ length: 10 }, () => new Array(10).fill(0));
+  for (const e of matrix) P[e.i][e.j] = e.p;
+  const flat: Record<string, number> = {};
+  const groups: MarketGroup[] = [];
+
+  const sumWhere = (f: (i: number, j: number) => boolean) => {
+    let s = 0;
+    for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) if (f(i, j)) s += P[i][j];
+    return s;
+  };
+
+  const mk = (key: string, label: string, prob: number, group: string): ExtendedMarketItem => {
+    const odds = userOdds[key] && userOdds[key] > 1 ? userOdds[key] : 0;
+    const item = { key, label, prob, odds, ev: odds > 1 ? prob * odds - 1 : 0, group };
+    flat[key] = prob;
+    return item;
+  };
+
+  // goal-difference distribution (for AH)
+  const diffM = new Map<number, number>();
+  for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++)
+    diffM.set(i - j, (diffM.get(i - j) ?? 0) + P[i][j]);
+  const ahFT = makeAH(diffM);
+
+  const pHome = sumWhere((i, j) => i > j);
+  const pDraw = sumWhere((i, j) => i === j);
+  const pAway = 1 - pHome - pDraw;
+
+  // 1. BTTS (audit fix: DC-corrected sum)
+  const pBttsYes = sumWhere((i, j) => i > 0 && j > 0);
+  groups.push({ name: 'BTTS', items: [
+    mk('bttsYes', 'BTTS: Yes', pBttsYes, 'BTTS'),
+    mk('bttsNo', 'BTTS: No', 1 - pBttsYes, 'BTTS'),
+  ]});
+
+  // 2. Over/Under FT
+  const ouItems: ExtendedMarketItem[] = [];
+  for (const line of [0.5, 1.5, 2.5, 3.5]) {
+    const over = sumWhere((i, j) => i + j > line);
+    const lk = String(line).replace('.', '');
+    ouItems.push(mk(`over${lk}`, `Over ${line}`, over, 'O/U FT'));
+    ouItems.push(mk(`under${lk}`, `Under ${line}`, 1 - over, 'O/U FT'));
+  }
+  groups.push({ name: 'Over/Under FT', items: ouItems });
+
+  // 3. Exact goals
+  const exItems: ExtendedMarketItem[] = [];
+  for (let n = 0; n <= 5; n++)
+    exItems.push(mk(`exact${n}`, `Exactly ${n} goals`, sumWhere((i, j) => i + j === n), 'Exact Goals'));
+  exItems.push(mk('exact6plus', '6+ goals', sumWhere((i, j) => i + j >= 6), 'Exact Goals'));
+  groups.push({ name: 'Exact Goals', items: exItems });
+
+  // 4. Odd/Even
+  const pOdd = sumWhere((i, j) => (i + j) % 2 === 1);
+  groups.push({ name: 'Odd/Even', items: [
+    mk('oddGoals', 'Odd total goals', pOdd, 'Odd/Even'),
+    mk('evenGoals', 'Even total goals', 1 - pOdd, 'Odd/Even'),
+  ]});
+
+  // 5. Goal groups
+  const range = (lo: number, hi: number) => sumWhere((i, j) => i + j >= lo && i + j <= hi);
+  groups.push({ name: 'Goal Groups', items: [
+    mk('group01', '0-1 goals', range(0, 1), 'Goal Groups'),
+    mk('group23', '2-3 goals', range(2, 3), 'Goal Groups'),
+    mk('group45', '4-5 goals', range(4, 5), 'Goal Groups'),
+    mk('group6p', '6+ goals', sumWhere((i, j) => i + j >= 6), 'Goal Groups'),
+  ]});
+
+  // 6. Double chance
+  const p1X = pHome + pDraw;
+  groups.push({ name: 'Double Chance', items: [
+    mk('dc1X', '1X (Home or Draw)', p1X, 'Double Chance'),
+    mk('dcX2', 'X2 (Draw or Away)', pDraw + pAway, 'Double Chance'),
+    mk('dc12', '12 (Home or Away)', pHome + pAway, 'Double Chance'),
+  ]});
+
+  // 7. Asian Handicap FT
+  const ahLines = [-1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1];
+  groups.push({ name: 'Asian Handicap FT', items: ahLines.map((L) =>
+    mk(`ah${L}`, `AH Home ${L > 0 ? '+' : ''}${L}`, ahFT.home(L), 'Asian Handicap FT')) });
+
+  // HT score matrix (lambda/2 per team, same rho)
+  const hts = buildScoreMatrix(lH / 2, lA / 2, rho);
+  const htp: number[][] = Array.from({ length: 10 }, () => new Array(10).fill(0));
+  for (const e of hts.matrix) htp[e.i][e.j] = e.p;
+  const htSumWhere = (f: (i: number, j: number) => boolean) => {
+    let s = 0;
+    for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) if (f(i, j)) s += htp[i][j];
+    return s;
+  };
+  const ht3 = outcomeProbs(hts.raw, hts.sum);
+  const htDiff = new Map<number, number>();
+  for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++)
+    htDiff.set(i - j, (htDiff.get(i - j) ?? 0) + htp[i][j]);
+  const ahHT = makeAH(htDiff);
+
+  // 8. AH HT
+  groups.push({ name: 'Asian Handicap HT', items: [
+    mk('ahht-0.5', 'AH HT Home -0.5', ahHT.home(-0.5), 'Asian Handicap HT'),
+    mk('ahht-0.25', 'AH HT Home -0.25', ahHT.home(-0.25), 'Asian Handicap HT'),
+    mk('ahht0', 'AH HT Home 0', ahHT.home(0), 'Asian Handicap HT'),
+  ]});
+
+  // 9 & 10. Team goals O/U
+  const teamItems: ExtendedMarketItem[] = [];
+  for (const side of ['home', 'away'] as const) {
+    for (const line of [0.5, 1.5, 2.5]) {
+      let over = 0;
+      for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) {
+        const g = side === 'home' ? i : j;
+        if (g > line) over += P[i][j];
+      }
+      const lk = String(line).replace('.', '');
+      teamItems.push(mk(`${side}Over${lk}`, `${side === 'home' ? 'Home' : 'Away'} Over ${line}`, over, 'Team Goals'));
+      teamItems.push(mk(`${side}Under${lk}`, `${side === 'home' ? 'Home' : 'Away'} Under ${line}`, 1 - over, 'Team Goals'));
+    }
+  }
+  groups.push({ name: 'Team Goals O/U', items: teamItems });
+
+  // 11. First to score (lambda-ratio proportional)
+  const pNeither = P[0][0];
+  const pFtsH = (lH / (lH + lA)) * (1 - pNeither);
+  const pFtsA = 1 - pNeither - pFtsH;
+  groups.push({ name: 'First To Score', items: [
+    mk('ftsHome', 'Home scores first', pFtsH, 'First To Score'),
+    mk('ftsAway', 'Away scores first', pFtsA, 'First To Score'),
+    mk('ftsNeither', 'Neither scores', pNeither, 'First To Score'),
+  ]});
+
+  // 12. 3-Way Half Time
+  groups.push({ name: 'Half Time 3-Way', items: [
+    mk('ht3Home', 'Home leading at HT', ht3.home, 'Half Time 3-Way'),
+    mk('ht3Draw', 'Draw at HT', ht3.draw, 'Half Time 3-Way'),
+    mk('ht3Away', 'Away leading at HT', ht3.away, 'Half Time 3-Way'),
+  ]});
+
+  // 13. BTTS HT
+  const pBttsHT = htSumWhere((i, j) => i > 0 && j > 0);
+  groups.push({ name: 'BTTS Half Time', items: [
+    mk('bttsHTYes', 'BTTS at HT: Yes', pBttsHT, 'BTTS Half Time'),
+    mk('bttsHTNo', 'BTTS at HT: No', 1 - pBttsHT, 'BTTS Half Time'),
+  ]});
+
+  // 14. O/U Half Time
+  const htOver05 = htSumWhere((i, j) => i + j > 0.5);
+  const htOver15 = htSumWhere((i, j) => i + j > 1.5);
+  groups.push({ name: 'Over/Under HT', items: [
+    mk('htOver05', 'HT Over 0.5', htOver05, 'Over/Under HT'),
+    mk('htUnder05', 'HT Under 0.5', 1 - htOver05, 'Over/Under HT'),
+    mk('htOver15', 'HT Over 1.5', htOver15, 'Over/Under HT'),
+    mk('htUnder15', 'HT Under 1.5', 1 - htOver15, 'Over/Under HT'),
+  ]});
+
+  // 15. Half with most goals (independent Poisson halves)
+  const m = (lH + lA) / 2;
+  let p1st = 0, pNeitherHalf = 0;
+  for (let a = 0; a < 10; a++) for (let b = 0; b < 10; b++) {
+    const pj = poisson(a, m) * poisson(b, m);
+    if (a > b) p1st += pj; else if (a === b) pNeitherHalf += pj;
+  }
+  groups.push({ name: 'Half With Most Goals', items: [
+    mk('halfMost1st', '1st half', p1st, 'Half With Most Goals'),
+    mk('halfMost2nd', '2nd half', 1 - p1st - pNeitherHalf, 'Half With Most Goals'),
+    mk('halfMostNeither', 'Equal', pNeitherHalf, 'Half With Most Goals'),
+  ]});
+
+  // 16. HT/FT Double Result (v9 copula + IPF exact margins)
+  const htft = htftJointExact(lH, lA, rho);
+  const htftItems = Object.entries(htft).map(([k, prob]) =>
+    mk(`htft_${k}`, `HT/FT ${k.replace('_', '/')}`, prob, 'HT/FT'))
+    .sort((a, b) => b.prob - a.prob);
+  groups.push({ name: 'HT/FT Double Result', items: htftItems });
+
+  // 17. Euro Handicap
+  const ehLines = ['-1:0', '0:1', '1:0', '0:-1', '-2:0', '0:2', '1:1', '2:1', '1:2', '2:0', '0:-2'];
+  const ehItems: ExtendedMarketItem[] = [];
+  for (const line of ehLines) {
+    const [hStr, aStr] = line.split(':');
+    const adjH = parseFloat(hStr), adjA = parseFloat(aStr);
+    let ph = 0, pd = 0, pa = 0;
+    for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) {
+      const vh = i + adjH, va = j + adjA;
+      if (vh > va) ph += P[i][j]; else if (vh === va) pd += P[i][j]; else pa += P[i][j];
+    }
+    ehItems.push(mk(`eh_${line}_1`, `EH ${line}: Home`, ph, 'Euro Handicap'));
+    ehItems.push(mk(`eh_${line}_X`, `EH ${line}: Draw`, pd, 'Euro Handicap'));
+    ehItems.push(mk(`eh_${line}_2`, `EH ${line}: Away`, pa, 'Euro Handicap'));
+  }
+  groups.push({ name: 'Euro Handicap', items: ehItems });
+
+  // 18. Correct Score (top 8)
+  groups.push({ name: 'Correct Score', items:
+    [...matrix].slice(0, 8).map((e) => mk(`cs_${e.i}_${e.j}`, `Score ${e.i}-${e.j}`, e.p, 'Correct Score')) });
+
+  // 19. FTR + O/U combos
+  const ftrOf = (i: number, j: number) => (i > j ? '1' : i === j ? 'X' : '2');
+  const ftrOUItems: ExtendedMarketItem[] = [];
+  for (const ftr of ['1', 'X', '2']) {
+    for (const [lk, line, over] of [['O15', 1.5, true], ['U15', 1.5, false], ['O25', 2.5, true], ['U25', 2.5, false]] as const) {
+      const p = sumWhere((i, j) => ftrOf(i, j) === ftr && (i + j > line) === over);
+      ftrOUItems.push(mk(`ftrOU_${ftr}_${lk}`, `${ftr} & ${over ? 'Over' : 'Under'} ${line}`, p, 'FTR + O/U'));
+    }
+  }
+  groups.push({ name: 'FTR + Over/Under', items: ftrOUItems });
+
+  // 20-23. FTR + BTTS combos
+  const ftrBTTSItems: ExtendedMarketItem[] = [];
+  for (const ftr of ['1', 'X', '2']) {
+    for (const [bk, yes] of [['Yes', true], ['No', false]] as const) {
+      const p = sumWhere((i, j) => ftrOf(i, j) === ftr && (i > 0 && j > 0) === yes);
+      ftrBTTSItems.push(mk(`ftrBTTS_${ftr}_${bk}`, `${ftr} & BTTS ${yes ? 'Yes' : 'No'}`, p, 'FTR + BTTS'));
+    }
+  }
+  groups.push({ name: 'FTR + BTTS', items: ftrBTTSItems });
+
+  const topEvBets = groups.flatMap((g) => g.items)
+    .filter((it) => it.odds > 1 && it.ev > 0)
+    .sort((a, b) => b.ev - a.ev)
+    .slice(0, 4);
+
+  return {
+    groups, topEvBets, flat,
+    pHome, pDraw, pAway, pBttsYes,
+    pOver25: sumWhere((i, j) => i + j > 2.5),
+    p1X, htft,
+  };
+}
+===ATLAS_FILE: src/lib/v9/store/atlas-store.ts===
+// ============================================================
+// ATLAS v9.0 Zustand store — IndexedDB persistence (async)
+// RULES: batch sims yield to event loop (10.3); recalibration
+// never below 5 resolved (Rule 4); split param sets (Rule 6);
+// PARAMS_VERSION gate; all computation client-side (Rule 7)
+// ============================================================
+'use client';
+import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import {
+  emptyMatch, DC_RHO_STANDARD, DC_RHO_JACKPOT, PARAMS_VERSION, MIN_RECALIBRATION_RESULTS,
+} from '../atlas-types';
+import type { Match, Outcome, GameType, SimResult, AtlasAnalysis } from '../atlas-types';
+import type { LearnedParams, PredictionRecord } from '../learning/bayesian-learning';
+import { defaultParams, recalibrate } from '../learning/bayesian-learning';
+import { calibrateLambda } from '../math/calibration';
+import { buildScoreMatrix, outcomeProbs } from '../math/dixon-coles';
+import { adaptiveSimulate, simulateParlay } from '../math/adaptive-mc';
+import { atlasAnalyseJackpotV9 } from '../engines/jackpot';
+import { idbGet, idbSet } from '../storage/idb';
+
+export interface FeedbackEntry {
+  id: string; ts: number; matchLabel: string;
+  market: string; pick: string; odds: number;
+  result: 'won' | 'lost' | 'pending';
+}
+export interface ApiPick {
+  id: string; home: string; away: string; league: string; kickoff: string;
+  h: string; d: string; a: string; bookmakers: number; valueGap: number;
+}
+export interface ParlaySimResult {
+  allCorrect: number; legProbs: number[]; expectedCorrect: number;
+  distribution: number[]; cumulative: Record<number, number>; legs: number;
+}
+export interface RecalLogEntry { at: number; gameType: GameType; message: string; }
+
+interface AtlasState {
+  matches: Match[];
+  results: Record<string, Outcome>;
+  feedback: FeedbackEntry[];
+  phi: number;
+  predictions: PredictionRecord[];
+  standardParams: LearnedParams;
+  jackpotParams: LearnedParams;
+  simResults: Record<string, SimResult>;
+  parlaySim: ParlaySimResult | null;
+  recalibrationLog: RecalLogEntry[];
+  apiPicks: ApiPick[]; apiPicksLoading: boolean; apiPicksError: string | null;
+  simsRunning: boolean;
+
+  addMatch: () => void;
+  removeMatch: (id: string) => void;
+  updateMatch: (id: string, patch: Partial<Match>) => void;
+  updateOdds: (id: string, key: string, value: number) => void;
+  toggleEngine: (id: string) => void;
+  setPhi: (v: number) => void;
+  recordPrediction: (match: Match, a: AtlasAnalysis) => void;
+  submitResult: (id: string, outcome: Outcome) => void;
+  forceRecalibrate: (gameType: GameType) => void;
+  clearLearningData: () => void;
+  runAllSims: () => Promise<void>;
+  runParlaySim: () => void;
+  fetchApiPicks: () => Promise<void>;
+  importApiPicks: () => void;
+  addFeedback: (e: Omit<FeedbackEntry, 'id' | 'ts'>) => void;
+  exportSession: () => string;
+  importSession: (json: string) => boolean;
+}
+
+const idbStorage = {
+  getItem: async (name: string) => {
+    if (typeof indexedDB === 'undefined') return null;
+    return (await idbGet<string>(name)) ?? null;
+  },
+  setItem: async (name: string, value: string) => {
+    if (typeof indexedDB === 'undefined') return;
+    await idbSet(name, value);
+  },
+  removeItem: async (name: string) => {
+    if (typeof indexedDB === 'undefined') return;
+    await idbSet(name, null);
+  },
+};
+
+export const useAtlasStore = create<AtlasState>()(
+  persist(
+    (set, get) => ({
+      matches: [], results: {}, feedback: [], phi: 0.10,
+      predictions: [],
+      standardParams: defaultParams(), jackpotParams: defaultParams(),
+      simResults: {}, parlaySim: null, recalibrationLog: [],
+      apiPicks: [], apiPicksLoading: false, apiPicksError: null,
+      simsRunning: false,
+
+      addMatch: () => set((s) => ({ matches: [...s.matches, emptyMatch(crypto.randomUUID())] })),
+      removeMatch: (id) => set((s) => ({ matches: s.matches.filter((m) => m.id !== id) })),
+      updateMatch: (id, patch) => set((s) => ({
+        matches: s.matches.map((m) => (m.id === id ? { ...m, ...patch } : m)),
+      })),
+      updateOdds: (id, key, value) => set((s) => ({
+        matches: s.matches.map((m) => (m.id === id
+          ? { ...m, userOdds: { ...m.userOdds, [key]: value } } : m)),
+      })),
+      toggleEngine: (id) => set((s) => ({
+        matches: s.matches.map((m) => (m.id === id
+          ? { ...m, gameType: m.gameType === 'standard' ? 'jackpot' : 'standard' } : m)),
+      })),
+      setPhi: (v) => set({ phi: v }),
+
+      recordPrediction: (match, a) => set((s) => ({
+        predictions: [
+          ...s.predictions.filter((p) => p.matchId !== match.id),
+          {
+            id: crypto.randomUUID(), matchId: match.id, gameType: match.gameType,
+            pick: a.pick, confidence: a.confidence, probs: { ...a.probs },
+            sofTriggered: a.sofTriggered, margin: a.margin, timestamp: Date.now(),
+          },
+        ],
+      })),
+
+      submitResult: (id, outcome) => {
+        set((s) => ({
+          results: { ...s.results, [id]: outcome },
+          predictions: s.predictions.map((p) =>
+            p.matchId === id && !p.result ? { ...p, result: outcome, resolvedAt: Date.now() } : p),
+        }));
+        // Rule 4 + auto-recalibrate every 5th resolved result
+        const s = get();
+        const pred = s.predictions.find((p) => p.matchId === id);
+        if (!pred) return;
+        const n = s.predictions.filter((p) => p.gameType === pred.gameType && p.result).length;
+        if (n >= MIN_RECALIBRATION_RESULTS && n % MIN_RECALIBRATION_RESULTS === 0)
+          get().forceRecalibrate(pred.gameType);
+      },
+
+      forceRecalibrate: (gameType) => {
+        const s = get();
+        const params = gameType === 'standard' ? s.standardParams : s.jackpotParams;
+        const { params: np, message } = recalibrate(params, s.predictions, gameType);
+        set(gameType === 'standard' ? { standardParams: np } : { jackpotParams: np });
+        set((st) => ({ recalibrationLog: [...st.recalibrationLog, { at: Date.now(), gameType, message }] }));
+      },
+
+      clearLearningData: () => set({
+        predictions: [], recalibrationLog: [],
+        standardParams: defaultParams(), jackpotParams: defaultParams(),
+      }),
+
+      // Rule 10.3: sequential, yield to event loop between matches
+      runAllSims: async () => {
+        set({ simsRunning: true });
+        for (const m of get().matches) {
+          const h = parseFloat(m.h), d = parseFloat(m.d), a = parseFloat(m.a);
+          if (h > 1 && d > 1 && a > 1) {
+            const rho = m.gameType === 'jackpot' ? DC_RHO_JACKPOT : DC_RHO_STANDARD;
+            const cal = calibrateLambda(h, d, a, rho, m.prior);
+            const sm = buildScoreMatrix(cal.lambdaH, cal.lambdaA, rho);
+            const grid = outcomeProbs(sm.raw, sm.sum);
+            const sim = adaptiveSimulate(cal.lambdaH, cal.lambdaA, rho, { gridProbs: grid });
+            set((s) => ({ simResults: { ...s.simResults, [m.id]: sim } }));
+          }
+          await new Promise((r) => setTimeout(r, 0));
+        }
+        set({ simsRunning: false });
+      },
+
+      runParlaySim: () => {
+        const legs = get().matches
+          .filter((m) => m.gameType === 'jackpot' &&
+            parseFloat(m.h) > 1 && parseFloat(m.d) > 1 && parseFloat(m.a) > 1)
+          .map((m) => {
+            const a = atlasAnalyseJackpotV9(m, get().phi);
+            return { lH: a.calibration.lambdaH, lA: a.calibration.lambdaA, rho: DC_RHO_JACKPOT, pick: a.pick };
+          });
+        if (!legs.length) return;
+        const r = simulateParlay(legs);
+        set({ parlaySim: { ...r, legs: legs.length } });
+      },
+
+      fetchApiPicks: async () => {
+        set({ apiPicksLoading: true, apiPicksError: null });
+        try {
+          const res = await fetch('/api/daily-picks');
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          set({ apiPicks: data.picks ?? [], apiPicksLoading: false });
+        } catch (e) {
+          set({ apiPicksLoading: false, apiPicksError: e instanceof Error ? e.message : 'fetch failed' });
+        }
+      },
+
+      importApiPicks: () => {
+        const picks = get().apiPicks;
+        const newMatches: Match[] = picks.map((p) => ({
+          ...emptyMatch(p.id ?? crypto.randomUUID()),
+          home: p.home, away: p.away, league: p.league, kickoff: p.kickoff,
+          h: p.h, d: p.d, a: p.a,
+          gameType: picks.length >= 10 ? 'jackpot' : 'standard',
+        }));
+        set((s) => ({ matches: [...s.matches, ...newMatches], apiPicks: [] }));
+      },
+
+      addFeedback: (e) => set((s) => ({
+        feedback: [...s.feedback, { ...e, id: crypto.randomUUID(), ts: Date.now() }],
+      })),
+
+      exportSession: () => JSON.stringify({
+        version: 'atlas_v9', exportedAt: Date.now(),
+        matches: get().matches, results: get().results, phi: get().phi,
+        predictions: get().predictions, feedback: get().feedback,
+        standardParams: get().standardParams, jackpotParams: get().jackpotParams,
+        recalibrationLog: get().recalibrationLog,
+      }, null, 2),
+
+      // PARAMS_VERSION gate: reject older/mixed param sets
+      importSession: (json) => {
+        try {
+          const data = JSON.parse(json);
+          const sp = data.standardParams?.version === PARAMS_VERSION ? data.standardParams : defaultParams();
+          const jp = data.jackpotParams?.version === PARAMS_VERSION ? data.jackpotParams : defaultParams();
+          set({
+            matches: data.matches ?? [], results: data.results ?? {},
+            phi: typeof data.phi === 'number' ? data.phi : 0.10,
+            predictions: data.predictions ?? [], feedback: data.feedback ?? [],
+            standardParams: sp, jackpotParams: jp,
+            recalibrationLog: data.recalibrationLog ?? [],
+          });
+          return true;
+        } catch { return false; }
+      },
+    }),
+    {
+      name: 'atlas_v9_store',
+      storage: createJSONStorage(() => idbStorage),
+      partialize: (s) => ({
+        matches: s.matches, results: s.results, feedback: s.feedback, phi: s.phi,
+        predictions: s.predictions, standardParams: s.standardParams,
+        jackpotParams: s.jackpotParams, recalibrationLog: s.recalibrationLog,
+      }),
+      onRehydrateStorage: () => (state) => {
+        if (state && state.standardParams.version !== PARAMS_VERSION) state.standardParams = defaultParams();
+        if (state && state.jackpotParams.version !== PARAMS_VERSION) state.jackpotParams = defaultParams();
+      },
+    },
+  ),
+);
+===ATLAS_FILE: src/lib/v9/parsers/odds-parser.ts===
+// ============================================================
+// Smart Paste odds parser — pure function, called on EVERY
+// keystroke (Rule 3: live count badge). Handles label:odds,
+// tab-separated, and vertical formats.
+// ============================================================
+const LABEL_MAP: Record<string, string> = {
+  'gg': 'bttsYes', 'btts': 'bttsYes', 'both teams to score': 'bttsYes', 'btts yes': 'bttsYes',
+  'ng': 'bttsNo', 'btts no': 'bttsNo',
+  'over 0.5': 'over05', 'under 0.5': 'under05',
+  'over 1.5': 'over15', 'under 1.5': 'under15',
+  'over 2.5': 'over25', 'under 2.5': 'under25',
+  'over 3.5': 'over35', 'under 3.5': 'under35',
+  'over 0.5 ht': 'htOver05', 'under 0.5 ht': 'htUnder05',
+  'over 1.5 ht': 'htOver15', 'under 1.5 ht': 'htUnder15',
+  '1x': 'dc1X', 'x2': 'dcX2', '12': 'dc12',
+  'home -1': 'ah-1', 'home -0.75': 'ah-0.75', 'home -0.5': 'ah-0.5', 'home -0.25': 'ah-0.25',
+  'home 0': 'ah0', 'home +0.25': 'ah0.25', 'home +0.5': 'ah0.5', 'home +0.75': 'ah0.75', 'home +1': 'ah1',
+  'odd': 'oddGoals', 'even': 'evenGoals',
+  '0-1 goals': 'group01', '2-3 goals': 'group23', '4-5 goals': 'group45', '6+ goals': 'group6p',
+  'exact 0': 'exact0', 'exact 1': 'exact1', 'exact 2': 'exact2', 'exact 3': 'exact3',
+  'exact 4': 'exact4', 'exact 5': 'exact5', 'exact 6+': 'exact6plus',
+  'home over 0.5': 'homeOver05', 'home under 0.5': 'homeUnder05',
+  'home over 1.5': 'homeOver15', 'home under 1.5': 'homeUnder15',
+  'home over 2.5': 'homeOver25', 'home under 2.5': 'homeUnder25',
+  'away over 0.5': 'awayOver05', 'away under 0.5': 'awayUnder05',
+  'away over 1.5': 'awayOver15', 'away under 1.5': 'awayUnder15',
+  'away over 2.5': 'awayOver25', 'away under 2.5': 'awayUnder25',
+  'home to score first': 'ftsHome', 'away to score first': 'ftsAway', 'no goal': 'ftsNeither',
+  'home ht': 'ht3Home', 'draw ht': 'ht3Draw', 'away ht': 'ht3Away',
+  'btts ht yes': 'bttsHTYes', 'btts ht no': 'bttsHTNo',
+  '1st half most goals': 'halfMost1st', '2nd half most goals': 'halfMost2nd', 'equal halves': 'halfMostNeither',
+};
+const HTFT_ALIASES: Record<string, string> = {
+  '1/1': 'htft_1_1', '1/x': 'htft_1_X', '1/2': 'htft_1_2',
+  'x/1': 'htft_X_1', 'x/x': 'htft_X_X', 'x/2': 'htft_X_2',
+  '2/1': 'htft_2_1', '2/x': 'htft_2_X', '2/2': 'htft_2_2',
+  'home/home': 'htft_1_1', 'home/draw': 'htft_1_X', 'home/away': 'htft_1_2',
+  'draw/home': 'htft_X_1', 'draw/draw': 'htft_X_X', 'draw/away': 'htft_X_2',
+  'away/home': 'htft_2_1', 'away/draw': 'htft_2_X', 'away/away': 'htft_2_2',
+};
+
+export interface ParsedOdds { odds: Record<string, number>; count: number; unmatched: string[]; }
+
+export function parseSmartPaste(text: string): ParsedOdds {
+  const odds: Record<string, number> = {};
+  const unmatched: string[] = [];
+  if (!text || !text.trim()) return { odds, count: 0, unmatched };
+
+  const lines = text.split(/\n/).map((l) => l.trim()).filter(Boolean);
+  let pendingLabel: string | null = null;
+
+  for (const line of lines) {
+    const m = line.match(/^(.+?)\s*[:\t]\s*(\d+\.?\d*)\s*$/) ||
+              line.match(/^(.+?)\s{2,}(\d+\.?\d*)\s*$/);
+    if (m) {
+      const key = resolveKey(m[1]);
+      if (key) { odds[key] = parseFloat(m[2]); continue; }
+      unmatched.push(line);
+      continue;
+    }
+    if (/^\d+\.\d+$/.test(line) && pendingLabel) {
+      const key = resolveKey(pendingLabel);
+      if (key) odds[key] = parseFloat(line); else unmatched.push(pendingLabel);
+      pendingLabel = null;
+      continue;
+    }
+    pendingLabel = line;
+  }
+  return { odds, count: Object.keys(odds).length, unmatched };
+}
+
+function resolveKey(label: string): string | null {
+  const norm = label.toLowerCase().trim();
+  if (LABEL_MAP[norm]) return LABEL_MAP[norm];
+  if (HTFT_ALIASES[norm]) return HTFT_ALIASES[norm];
+  const cs = norm.match(/^(\d)\s*[:\-]\s*(\d)$/);
+  if (cs && +cs[1] <= 9 && +cs[2] <= 9) return `cs_${cs[1]}_${cs[2]}`;
+  const ftr = norm.match(/^(1|x|2|home|draw|away)\s*(?:&|and)\s*(.+)$/);
+  if (ftr) {
+    const f = ftr[1] === 'home' ? '1' : ftr[1] === 'draw' ? 'X' : ftr[1] === 'away' ? '2' : ftr[1].toUpperCase();
+    const rest = ftr[2].trim();
+    const ou = rest.match(/^(over|under|o|u)\s*(\d\.5)$/);
+    if (ou) {
+      const over = ou[1].startsWith('o');
+      return `ftrOU_${f}_${over ? 'O' : 'U'}${ou[2].replace('.', '')}`;
+    }
+    if (/^(gg|btts|yes)$/.test(rest)) return `ftrBTTS_${f}_Yes`;
+    if (/^(ng|no)$/.test(rest)) return `ftrBTTS_${f}_No`;
+  }
+  return null;
+}
+===ATLAS_FILE: src/lib/v9/parsers/bet-slip-parser.ts===
+// ============================================================
+// Bet slip parser — 23 market classifier + manual entry options
+// ============================================================
+export type BetMarket =
+  | '1x2' | 'over15' | 'under15' | 'over25' | 'under25' | 'over35' | 'under35'
+  | 'btts_yes' | 'btts_no' | 'double_chance' | 'asian_handicap' | 'correct_score'
+  | 'half_time_result' | 'half_time_full_time' | 'first_goalscorer' | 'exact_goals'
+  | 'home_over25' | 'away_over25' | 'clean_sheet' | 'goal_range'
+  | 'ftr_over' | 'ftr_btts' | 'other';
+
+export interface ParsedBet {
+  teams: string; market: BetMarket; pick: string; odds: number;
+  result: 'won' | 'lost' | 'pending'; score?: string;
+}
+
+export const MANUAL_MARKET_OPTIONS: { value: BetMarket; label: string; picks: string[] }[] = [
+  { value: '1x2', label: '1X2 (Home/Draw/Away)', picks: ['Home', 'Draw', 'Away'] },
+  { value: 'over15', label: 'Over 1.5 Goals', picks: ['Over 1.5'] },
+  { value: 'under15', label: 'Under 1.5 Goals', picks: ['Under 1.5'] },
+  { value: 'over25', label: 'Over 2.5 Goals', picks: ['Over 2.5'] },
+  { value: 'under25', label: 'Under 2.5 Goals', picks: ['Under 2.5'] },
+  { value: 'over35', label: 'Over 3.5 Goals', picks: ['Over 3.5'] },
+  { value: 'under35', label: 'Under 3.5 Goals', picks: ['Under 3.5'] },
+  { value: 'btts_yes', label: 'BTTS Yes', picks: ['Yes'] },
+  { value: 'btts_no', label: 'BTTS No', picks: ['No'] },
+  { value: 'double_chance', label: 'Double Chance', picks: ['1X', 'X2', '12'] },
+  { value: 'asian_handicap', label: 'Asian Handicap', picks: ['-1', '-0.5', '0', '+0.5', '+1'] },
+  { value: 'correct_score', label: 'Correct Score', picks: ['1-0', '2-0', '2-1', '1-1', '0-0', '0-1', '1-2', '0-2'] },
+  { value: 'half_time_result', label: 'Half Time Result', picks: ['Home HT', 'Draw HT', 'Away HT'] },
+  { value: 'half_time_full_time', label: 'HT/FT', picks: ['1/1', '1/X', 'X/1', 'X/X', 'X/2', '2/X', '2/2'] },
+  { value: 'first_goalscorer', label: 'First To Score', picks: ['Home', 'Away', 'None'] },
+  { value: 'exact_goals', label: 'Exact Total Goals', picks: ['0', '1', '2', '3', '4', '5', '6+'] },
+  { value: 'home_over25', label: 'Home Over 2.5', picks: ['Over 2.5'] },
+  { value: 'away_over25', label: 'Away Over 2.5', picks: ['Over 2.5'] },
+  { value: 'clean_sheet', label: 'Clean Sheet', picks: ['Home', 'Away'] },
+  { value: 'goal_range', label: 'Goal Range', picks: ['0-1', '2-3', '4-5', '6+'] },
+  { value: 'ftr_over', label: 'FTR + Over/Under', picks: ['1 & O2.5', 'X & U2.5', '2 & O1.5'] },
+  { value: 'ftr_btts', label: 'FTR + BTTS', picks: ['1 & GG', 'X & NG', '2 & GG'] },
+  { value: 'other', label: 'Other', picks: ['Custom'] },
+];
+
+export function classifyMarket(text: string): BetMarket {
+  const t = text.toLowerCase();
+  if (/\b(btts|gg|ng|both teams to score)\b/.test(t)) {
+    if (/&|and/.test(t)) return 'ftr_btts';
+    return /\b(ng|no)\b/.test(t) ? 'btts_no' : 'btts_yes';
+  }
+  if (/(over|under).*&|&.*(over|under)/.test(t) || /\b(ftr)\b/.test(t)) return 'ftr_over';
+  if (/ht\/ft|half time\/full time|\b[12x]\/[12x]\b/.test(t)) return 'half_time_full_time';
+  if (/correct score|\bcs\b|\d-\d/.test(t)) return 'correct_score';
+  if (/first (goal)?scorer|to score first/.test(t)) return 'first_goalscorer';
+  if (/exact.*goals|total goals exactly/.test(t)) return 'exact_goals';
+  if (/clean sheet/.test(t)) return 'clean_sheet';
+  if (/goal range|\b0-1 goals\b|\b2-3 goals\b/.test(t)) return 'goal_range';
+  if (/(home|away).*(over|under).*2\.5/.test(t)) return t.includes('home') ? 'home_over25' : 'away_over25';
+  if (/handicap|ah\b/.test(t) || /(^|\s)[+-]1(\s|$)/.test(t) || /[+-]0\.\d+/.test(t)) return 'asian_handicap';
+  if (/double chance|\b(1x|x2|12)\b/.test(t)) return 'double_chance';
+  if (/half time result|\bht\b.*(home|draw|away)/.test(t)) return 'half_time_result';
+  if (/over\s*1\.5/.test(t)) return 'over15';
+  if (/over\s*2\.5/.test(t)) return 'over25';
+  if (/over\s*3\.5/.test(t)) return 'over35';
+  if (/under\s*1\.5/.test(t)) return 'under15';
+  if (/under\s*2\.5/.test(t)) return 'under25';
+  if (/under\s*3\.5/.test(t)) return 'under35';
+  if (/over|under/.test(t)) return 'over25';
+  if (/home|draw|away|\b1x2\b/.test(t)) return '1x2';
+  return 'other';
+}
+
+export function parseBetSlip(text: string): ParsedBet[] {
+  const bets: ParsedBet[] = [];
+  if (!text.trim()) return bets;
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  let current: Partial<ParsedBet> = {};
+
+  for (const line of lines) {
+    if (/multi bet|bet id|stake|total odds/i.test(line)) {
+      if (current.teams && current.odds) bets.push(finalize(current));
+      current = {};
+      continue;
+    }
+    const result: ParsedBet['result'] = /✅|✔|won/i.test(line) ? 'won' : /❌|✘|lost/i.test(line) ? 'lost' : 'pending';
+    const pickLine = line.match(/^(?:pick|selection)[:\s]+(.+?)(?:\s*\((\d+\.?\d*)\))?\s*([✅✔❌✘])?$/i);
+    if (pickLine) {
+      current.pick = pickLine[1].trim();
+      if (pickLine[2]) current.odds = parseFloat(pickLine[2]);
+      if (pickLine[3]) current.result = pickLine[3] === '❌' || pickLine[3] === '✘' ? 'lost' : 'won';
+      current.market = classifyMarket(current.pick);
+      continue;
+    }
+    const oddsLine = line.match(/odds[:\s]+(\d+\.?\d*)/i);
+    if (oddsLine) { current.odds = parseFloat(oddsLine[1]); continue; }
+    const scoreLine = line.match(/(?:ft|score)[:\s]+(\d+)\s*[-:]\s*(\d+)/i);
+    if (scoreLine) { current.score = `${scoreLine[1]}-${scoreLine[2]}`; continue; }
+    if (/(vs| v | - )/i.test(line) || /^[A-Z].+ [A-Z]/.test(line)) {
+      if (current.teams && current.odds) { bets.push(finalize(current)); current = {}; }
+      current.teams = line;
+      if (!current.result) current.result = result;
+      if (!current.market) current.market = classifyMarket(line);
+    }
+  }
+  if (current.teams && current.odds) bets.push(finalize(current));
+  return bets;
+}
+
+function finalize(c: Partial<ParsedBet>): ParsedBet {
+  return {
+    teams: c.teams ?? 'Unknown', market: c.market ?? 'other',
+    pick: c.pick ?? '', odds: c.odds ?? 1, result: c.result ?? 'pending', score: c.score,
+  };
+}
+
+export function computeMarketStats(bets: ParsedBet[]) {
+  const map = new Map<BetMarket, { total: number; wins: number }>();
+  for (const b of bets) {
+    if (b.result === 'pending') continue;
+    const e = map.get(b.market) ?? { total: 0, wins: 0 };
+    e.total++;
+    if (b.result === 'won') e.wins++;
+    map.set(b.market, e);
+  }
+  return [...map.entries()]
+    .map(([market, s]) => ({ market, ...s, hitRate: s.total ? s.wins / s.total : 0 }))
+    .sort((a, b) => b.total - a.total);
+}
+===ATLAS_FILE: src/lib/v9/analysis/client-analyse.ts===
+// ============================================================
+// Client-side analysis text generator (export/copy path).
+// Two separate code paths — jackpot NEVER applies learning
+// adjustments or decorrelation overrides (Rule 6).
+// ============================================================
+import type { Match } from '../atlas-types';
+import { DC_RHO_STANDARD, DC_RHO_JACKPOT } from '../atlas-types';
+import { atlasAnalyseV9 } from '../engines/standard';
+import { atlasAnalyseJackpotV9 } from '../engines/jackpot';
+import { computeExtendedMarketsV9 } from '../markets/extended-markets';
+import type { LearnedParams } from '../learning/bayesian-learning';
+
+const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
+
+export function generateAnalysisText(
+  match: Match, phi: number, standardParams: LearnedParams,
+): string {
+  const isJackpot = match.gameType === 'jackpot';
+  const L: string[] = [];
+  L.push(`ATLAS v9.0 ${isJackpot ? 'JACKPOT' : 'STANDARD'} ANALYSIS`);
+  L.push(`${match.home || 'Home'} vs ${match.away || 'Away'} — ${match.league || 'Unknown league'}`);
+
+  if (isJackpot) {
+    const a = atlasAnalyseJackpotV9(match, phi);
+    L.push('');
+    L.push(`ENGINE: Jackpot | rho=${DC_RHO_JACKPOT} | Parlay-probability maximizing`);
+    L.push('Decorrelation override: DISABLED (parlay purity) | Learning: DISABLED');
+    L.push('');
+    L.push(`VERDICT: ${a.pick.toUpperCase()} @ ${pct(a.confidence)} confidence`);
+    L.push(`Parlay score (log p): ${a.parlayScore.toFixed(3)}`);
+    if (a.upsetVulnerable)
+      L.push(`UPSET VULNERABLE: |P(H)-P(A)| < 5% — consider secondary pick ${a.secondaryPick.toUpperCase()} (${pct(a.secondaryProb)})`);
+    L.push(`Home bias (std-jp rho delta): ${pct(a.homeBias)}`);
+    if (a.skippedDecorrOverride)
+      L.push(`Skipped EV flip to ${a.skippedDecorrOverride.wouldFlipTo.toUpperCase()} (EV ${pct(a.skippedDecorrOverride.evLost)} sacrificed for parlay probability)`);
+    L.push('');
+    L.push(`PROBS: H ${pct(a.probs.home)} | D ${pct(a.probs.draw)} | A ${pct(a.probs.away)}`);
+    L.push(`Threshold ${a.thresholdPass ? 'PASS' : 'FAIL'} (phi=${phi})`);
+    return L.join('\n');
+  }
+
+  const a = atlasAnalyseV9(match, phi, standardParams);
+  const ext = computeExtendedMarketsV9(
+    a.scoreMatrix, a.calibration.lambdaH, a.calibration.lambdaA, DC_RHO_STANDARD, match.userOdds,
+  );
+  L.push('');
+  L.push(`ENGINE: Standard | rho=${DC_RHO_STANDARD} | EV-maximizing`);
+  L.push('Decorrelation: ON | SOF: ON | Learning: ON');
+  L.push('');
+  L.push(`CALIBRATION: lH=${a.calibration.lambdaH.toFixed(2)} lA=${a.calibration.lambdaA.toFixed(2)} (SSE ${a.calibration.sse.toExponential(2)}, source: ${a.calibration.hybrid.source})`);
+  L.push(`Margin stripped: ${pct(a.margin)}`);
+  L.push('');
+  L.push(`VERDICT: ${a.pick.toUpperCase()} @ ${pct(a.confidence)} confidence${a.sofTriggered ? ' (SOF draw trigger)' : ''}${a.decorrOverride ? ' (decorrelation override)' : ''}`);
+  L.push(`Threshold ${a.thresholdPass ? 'PASS' : 'FAIL'} (phi=${phi})`);
+  L.push('');
+  L.push(`PROBS (adjusted): H ${pct(a.probs.home)} | D ${pct(a.probs.draw)} | A ${pct(a.probs.away)}`);
+  L.push(`BOOK:             H ${pct(a.bookProbs.home)} | D ${pct(a.bookProbs.draw)} | A ${pct(a.bookProbs.away)}`);
+  L.push('');
+  L.push(`DECORRELATION: score ${a.decorrelation.score.toFixed(0)}/100, max edge ${pct(a.decorrelation.maxEdge)}${a.decorrelation.spotted ? `, real spot: ${a.decorrelation.spotted.toUpperCase()}` : ''}`);
+  const best = a.portfolio.find((p) => p.isMaxEp);
+  if (best)
+    L.push(`BEST BET: ${best.outcome.toUpperCase()} | EV ${pct(best.ev)} | Kelly ${pct(best.stake)} | Sharpe ${best.sharpe.toFixed(2)}`);
+  L.push('');
+  L.push(`KEY MARKETS: O2.5 ${pct(ext.pOver25)} | BTTS ${pct(ext.pBttsYes)} | 1X ${pct(ext.p1X)}`);
+  L.push(`TOP SCORES: ${a.scoreMatrix.slice(0, 4).map((s) => `${s.s} (${pct(s.p)})`).join(', ')}`);
+  if (ext.topEvBets.length)
+    L.push(`TOP +EV: ${ext.topEvBets.map((b) => `${b.label} @${b.odds} EV ${pct(b.ev)}`).join(' | ')}`);
+  if (a.sim)
+    L.push(`MONTE CARLO (${a.sim.n.toLocaleString()} sims): disagreement ${a.sim.disagreement} | max delta ${pct(a.sim.maxDelta)} | conf x${a.sim.confMultiplier}`);
+  L.push('');
+  L.push(`KEY RISK: ${a.marginWarning.msg || 'No material warnings'}`);
+  return L.join('\n');
+}
+===ATLAS_FILE: src/lib/v9/analysis/backtester.ts===
+// ============================================================
+// Walk-forward calibration diagnostics: Brier, log-loss,
+// reliability bins, per-outcome accuracy. Powers CalibrationPanel.
+// ============================================================
+import type { Outcome } from '../atlas-types';
+import type { PredictionRecord } from '../learning/bayesian-learning';
+
+export interface ReliabilityBin { lo: number; hi: number; model: number; actual: number; n: number; }
+export interface CalibrationMetrics {
+  n: number; brier: number; logLoss: number; accuracy: number;
+  byOutcome: Record<Outcome, { n: number; accuracy: number }>;
+  reliability: ReliabilityBin[];
+}
+
+export function evaluatePredictions(records: PredictionRecord[]): CalibrationMetrics {
+  const resolved = records.filter((r) => r.result && r.probs);
+  const empty: CalibrationMetrics = {
+    n: 0, brier: 0, logLoss: 0, accuracy: 0,
+    byOutcome: { home: { n: 0, accuracy: 0 }, draw: { n: 0, accuracy: 0 }, away: { n: 0, accuracy: 0 } },
+    reliability: [],
+  };
+  if (resolved.length < 5) return empty; // same 5-result minimum as learning
+
+  let brier = 0, logLoss = 0, hits = 0;
+  const byOut: Record<Outcome, { n: number; hits: number }> = {
+    home: { n: 0, hits: 0 }, draw: { n: 0, hits: 0 }, away: { n: 0, hits: 0 },
+  };
+  const bins: ReliabilityBin[] = Array.from({ length: 5 }, (_, k) => ({
+    lo: k * 0.2, hi: (k + 1) * 0.2, model: 0, actual: 0, n: 0,
+  }));
+
+  for (const r of resolved) {
+    const actual = r.result!;
+    const p = r.probs;
+    for (const k of ['home', 'draw', 'away'] as Outcome[])
+      brier += (p[k] - (k === actual ? 1 : 0)) ** 2;
+    logLoss += -Math.log(Math.max(p[actual], 1e-9));
+    if (r.pick === actual) hits++;
+    byOut[actual].n++;
+    if (r.pick === actual) byOut[actual].hits++;
+    const pk = p[r.pick];
+    const b = bins[Math.min(4, Math.floor(pk * 5))];
+    b.model += pk; b.actual += r.pick === actual ? 1 : 0; b.n++;
+  }
+
+  const n = resolved.length;
+  return {
+    n,
+    brier: brier / n,
+    logLoss: logLoss / n,
+    accuracy: hits / n,
+    byOutcome: {
+      home: { n: byOut.home.n, accuracy: byOut.home.n ? byOut.home.hits / byOut.home.n : 0 },
+      draw: { n: byOut.draw.n, accuracy: byOut.draw.n ? byOut.draw.hits / byOut.draw.n : 0 },
+      away: { n: byOut.away.n, accuracy: byOut.away.n ? byOut.away.hits / byOut.away.n : 0 },
+    },
+    reliability: bins.map((b) => ({
+      lo: b.lo, hi: b.hi,
+      model: b.n ? b.model / b.n : 0,
+      actual: b.n ? b.actual / b.n : 0,
+      n: b.n,
+    })),
+  };
+}
+===ATLAS_FILE: src/lib/v9/ui/atlas-colors.ts===
+// ============================================================
+// Engine color system — Rule 2: bars MUST be color-differentiated
+// Standard = blue/violet/green | Jackpot = amber/orange/yellow
+// ============================================================
+export type EngineMode = 'standard' | 'jackpot';
+
+export const ENGINE_COLORS: Record<EngineMode, {
+  home: string; draw: string; away: string;
+  barHome: string; barDraw: string; barAway: string;
+  badge: string; accent: string; border: string;
+}> = {
+  standard: {
+    home: 'text-blue-400', draw: 'text-violet-400', away: 'text-emerald-400',
+    barHome: 'bg-blue-500', barDraw: 'bg-violet-500', barAway: 'bg-emerald-500',
+    badge: 'bg-blue-500/15 text-blue-400 border border-blue-500/30',
+    accent: 'text-blue-400', border: 'border-blue-500/25',
+  },
+  jackpot: {
+    home: 'text-amber-400', draw: 'text-orange-400', away: 'text-yellow-300',
+    barHome: 'bg-amber-500', barDraw: 'bg-orange-500', barAway: 'bg-yellow-400',
+    badge: 'bg-amber-500/15 text-amber-400 border border-amber-500/30',
+    accent: 'text-amber-400', border: 'border-amber-500/25',
+  },
+};
+
+export const fmtPct = (x: number) => `${(x * 100).toFixed(1)}%`;
+export const fmtOdds = (x: number) => (x > 1 ? x.toFixed(2) : '—');

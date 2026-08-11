@@ -1,0 +1,391 @@
+===ATLAS_FILE: src/lib/v9/parsers/fixture-parser.ts===
+// ============================================================
+// Bulk fixture-list parser — for SportPesa's downloadable PDF
+// (up to 240 games, today + 3 days). User copies the PDF text;
+// we extract kickoff/league/teams/1X2. Ingestion only — all
+// prediction math stays client-side (Rule 7).
+// ============================================================
+export interface ParsedFixture {
+  home: string; away: string; league: string; kickoff: string;
+  h: string; d: string; a: string;
+}
+
+export function parseFixtureList(text: string): ParsedFixture[] {
+  const out: ParsedFixture[] = [];
+  let league = '';
+  let date = '';
+
+  for (const raw of text.split(/\n/)) {
+    const line = raw.replace(/\s+/g, ' ').trim();
+    if (!line) continue;
+
+    // date header: "SATURDAY 09/08/2026" / "09/08/2026"
+    if (/^(mon|tue|wed|thu|fri|sat|sun)\w*/i.test(line) || /^\d{2}[\/.-]\d{2}[\/.-]\d{2,4}$/.test(line)) {
+      date = line.replace(/^(mon|tue|wed|thu|fri|sat|sun)\w*\s*/i, '');
+      continue;
+    }
+
+    // match row with "vs" and 3 odds: [time] Home vs Away 1.93 3.55 3.05
+    const row = line.match(
+      /^(?:(\d{2}:\d{2})\s+)?(.+?)\s+(?:vs\.?|v)\s+(.+?)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)$/i,
+    );
+    if (row) {
+      out.push({
+        home: row[2].trim(), away: row[3].trim(), league,
+        kickoff: [date, row[1]].filter(Boolean).join(' '),
+        h: row[4], d: row[5], a: row[6],
+      });
+      continue;
+    }
+
+    // tabular row without "vs": "Home  Away  1.93 3.55 3.05" (2+ spaces)
+    const row2 = line.match(/^(.+?)\s{2,}(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)$/);
+    if (row2) {
+      const teams = row2[1].split(/\s{2,}|\t/).map((t) => t.trim()).filter(Boolean);
+      if (teams.length >= 2) {
+        out.push({
+          home: teams[0], away: teams[teams.length - 1], league,
+          kickoff: [date].filter(Boolean).join(' '),
+          h: row2[2], d: row2[3], a: row2[4],
+        });
+        continue;
+      }
+    }
+
+    // league header: short line, no odds, no "vs"
+    if (!/\d\.\d/.test(line) && !/\bvs\b/i.test(line) && line.length < 60) league = line;
+  }
+  return out;
+}
+===ATLAS_FILE: src/lib/v9/analysis/screener.ts===
+// ============================================================
+// Fixture Screener v9.2 — ranks a 240-game card into "better games".
+// Quality score 0-100 from margin sharpness, confidence, +EV spots,
+// MC agreement, and margin-asymmetry penalties. Auto-builds a
+// jackpot ticket (league-capped) and a standard +EV slate.
+// ============================================================
+import type { AtlasAnalysis, AtlasJackpotAnalysis } from '../atlas-types';
+
+export interface FixtureQuality {
+  score: number;
+  reasons: string[];
+  legProb: number;
+  maxEV: number;
+}
+
+export function qualityStandard(a: AtlasAnalysis): FixtureQuality {
+  let s = 50;
+  const reasons: string[] = [];
+  if (a.margin <= 0.05) { s += 15; reasons.push('sharp margin'); }
+  else if (a.margin <= 0.07) { s += 10; reasons.push('good margin'); }
+  else if (a.margin <= 0.09) { s += 5; }
+  else { s -= 10; reasons.push('high margin'); }
+
+  if (a.confidence >= 0.65) { s += 15; reasons.push('strong conf'); }
+  else if (a.confidence >= 0.58) { s += 10; }
+  else if (!a.thresholdPass) { s -= 15; reasons.push('below φ'); }
+
+  const maxEV = Math.max(...a.portfolio.map((p) => p.ev));
+  if (maxEV > 0) { s += Math.min(20, maxEV * 300); reasons.push('+EV spot'); }
+
+  const dis = a.sim?.disagreement;
+  if (dis === 'none') s += 5; else if (dis === 'low') s += 2;
+  else if (dis === 'medium') s -= 5; else if (dis === 'high') { s -= 15; reasons.push('MC disagree'); }
+
+  if (a.marginWarning.level === 'severe') { s -= 20; reasons.push('avoid: extreme fav'); }
+  else if (a.marginWarning.level === 'high') s -= 10;
+  if (a.verdict === 'BET') { s += 5; reasons.push('BET signal'); }
+
+  return { score: Math.max(0, Math.min(100, Math.round(s))), reasons, legProb: a.probs[a.pick], maxEV };
+}
+
+export function qualityJackpot(a: AtlasJackpotAnalysis): FixtureQuality {
+  let s = Math.round(a.confidence * 100);
+  const reasons: string[] = [];
+  if (a.confidence >= 0.70) { s += 10; reasons.push('solid leg'); }
+  if (a.upsetVulnerable) { s -= 20; reasons.push('upset-vulnerable'); }
+  if (a.marginWarning.level === 'severe') { s -= 15; reasons.push('extreme fav'); }
+  if (a.sim?.disagreement === 'high') { s -= 10; reasons.push('MC disagree'); }
+  if (a.margin <= 0.06) { s += 5; reasons.push('sharp margin'); }
+  return { score: Math.max(0, Math.min(100, Math.round(s))), reasons, legProb: a.probs[a.pick], maxEV: 0 };
+}
+
+export interface TicketRow { id: string; league: string; q: FixtureQuality; }
+
+// Jackpot ticket: greedy by leg probability, max 2 legs per league
+export function buildJackpotTicket(rows: TicketRow[], maxLegs = 8, maxPerLeague = 2): string[] {
+  const leagueCount = new Map<string, number>();
+  const ids: string[] = [];
+  for (const r of [...rows].sort((a, b) => b.q.legProb - a.q.legProb)) {
+    if (ids.length >= maxLegs) break;
+    const lg = r.league || 'unknown';
+    if ((leagueCount.get(lg) ?? 0) >= maxPerLeague) continue;
+    leagueCount.set(lg, (leagueCount.get(lg) ?? 0) + 1);
+    ids.push(r.id);
+  }
+  return ids;
+}
+
+// Standard slate: top +EV, quality-filtered
+export function buildStandardSlate(rows: TicketRow[], maxPicks = 5): string[] {
+  return [...rows]
+    .filter((r) => r.q.maxEV > 0 && r.q.score >= 55)
+    .sort((a, b) => b.q.maxEV - a.q.maxEV || b.q.score - a.q.score)
+    .slice(0, maxPicks)
+    .map((r) => r.id);
+}
+===ATLAS_FILE: src/components/atlas/ScreenerPanel.tsx===
+'use client';
+import { useMemo, useState } from 'react';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import { emptyMatch } from '@/lib/v9/atlas-types';
+import type { Match, AtlasAnalysis } from '@/lib/v9/atlas-types';
+import { atlasAnalyseV9 } from '@/lib/v9/engines/standard';
+import { atlasAnalyseJackpotV9 } from '@/lib/v9/engines/jackpot';
+import { parseFixtureList } from '@/lib/v9/parsers/fixture-parser';
+import { qualityStandard, qualityJackpot, buildJackpotTicket, buildStandardSlate } from '@/lib/v9/analysis/screener';
+import type { FixtureQuality } from '@/lib/v9/analysis/screener';
+import { fmtPct } from '@/lib/v9/ui/atlas-colors';
+
+interface Row { m: Match; a: AtlasAnalysis; q: FixtureQuality; }
+
+export default function ScreenerPanel() {
+  const matches = useAtlasStore((s) => s.matches);
+  const phi = useAtlasStore((s) => s.phi);
+  const standardParams = useAtlasStore((s) => s.standardParams);
+  const [text, setText] = useState('');
+  const [asJackpot, setAsJackpot] = useState(false);
+  const [ticket, setTicket] = useState<string[]>([]);
+
+  const rows = useMemo<Row[]>(() => matches
+    .filter((m) => parseFloat(m.h) > 1 && parseFloat(m.d) > 1 && parseFloat(m.a) > 1)
+    .map((m) => {
+      try {
+        if (m.gameType === 'jackpot') {
+          const a = atlasAnalyseJackpotV9(m, phi);
+          return { m, a, q: qualityJackpot(a) };
+        }
+        const a = atlasAnalyseV9(m, phi, standardParams);
+        return { m, a, q: qualityStandard(a) };
+      } catch { return null; }
+    })
+    .filter((r): r is Row => r !== null)
+    .sort((x, y) => y.q.score - x.q.score),
+  [matches, phi, standardParams]);
+
+  const parsed = useMemo(() => parseFixtureList(text), [text]);
+
+  const importFixtures = () => {
+    if (!parsed.length) return;
+    useAtlasStore.setState((s) => ({
+      matches: [
+        ...s.matches,
+        ...parsed.map((f) => ({
+          ...emptyMatch(crypto.randomUUID()), ...f,
+          gameType: asJackpot ? ('jackpot' as const) : ('standard' as const),
+        })),
+      ],
+    }));
+    setText('');
+  };
+
+  const toggle = (id: string) =>
+    setTicket((t) => (t.includes(id) ? t.filter((x) => x !== id) : [...t, id]));
+
+  const ticketRows = rows.filter((r) => ticket.includes(r.m.id));
+  const parlayProb = ticketRows.reduce((p, r) => p * r.q.legProb, 1);
+  const avgEV = ticketRows.length
+    ? ticketRows.reduce((s, r) => s + r.q.maxEV, 0) / ticketRows.length : 0;
+
+  const scoreColor = (s: number) =>
+    s >= 70 ? 'text-emerald-400' : s >= 55 ? 'text-yellow-400' : 'text-zinc-500';
+
+  return (
+    <div className="space-y-4">
+      {/* bulk ingest */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-xs font-bold text-zinc-300">
+            IMPORT FIXTURE LIST (SportPesa PDF → select-all → copy → paste)
+          </h3>
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums ${
+            parsed.length ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-800 text-zinc-500'}`}>
+            {parsed.length} fixtures detected
+          </span>
+        </div>
+        <textarea value={text} onChange={(e) => setText(e.target.value)}
+          placeholder={'Premier League\n14:00 Arsenal vs Chelsea 2.10 3.40 3.60\n16:30 Manchester City vs Atletico Madrid 1.93 3.55 3.05'}
+          className="h-28 w-full rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-300 focus:border-blue-500 focus:outline-none" />
+        <div className="mt-2 flex items-center gap-3">
+          <button onClick={importFixtures} disabled={!parsed.length}
+            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-40">
+            Import {parsed.length} fixtures
+          </button>
+          <label className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+            <input type="checkbox" checked={asJackpot} onChange={(e) => setAsJackpot(e.target.checked)} className="accent-amber-500" />
+            import as Jackpot legs
+          </label>
+        </div>
+      </div>
+
+      {/* auto-build */}
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => setTicket(buildJackpotTicket(rows))}
+          className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-500">
+          🎰 Auto-Build Jackpot Ticket (8 legs, ≤2 per league)
+        </button>
+        <button onClick={() => setTicket(buildStandardSlate(rows))}
+          className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500">
+          📊 Auto-Build Standard Slate (top 5 +EV)
+        </button>
+        {ticket.length > 0 && (
+          <button onClick={() => setTicket([])} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800">
+            Clear ticket
+          </button>
+        )}
+      </div>
+
+      {/* ticket summary */}
+      {ticketRows.length > 0 && (
+        <div className="rounded-xl border border-teal-500/25 bg-zinc-900/60 p-3">
+          <div className="grid grid-cols-3 gap-3 text-center">
+            <div><div className="text-lg font-bold text-zinc-100">{ticketRows.length}</div><div className="text-[10px] text-zinc-500">legs selected</div></div>
+            <div><div className="text-lg font-bold text-amber-300">{fmtPct(parlayProb)}</div><div className="text-[10px] text-zinc-500">combined all-hit probability</div></div>
+            <div><div className={`text-lg font-bold ${avgEV > 0 ? 'text-emerald-400' : 'text-zinc-400'}`}>{avgEV > 0 ? '+' : ''}{fmtPct(avgEV)}</div><div className="text-[10px] text-zinc-500">avg max EV (standard)</div></div>
+          </div>
+        </div>
+      )}
+
+      {/* ranked table */}
+      <div className="overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-900/60">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-[10px] uppercase text-zinc-500">
+              <th className="px-2 py-2">★</th><th className="px-2 py-2">Score</th>
+              <th className="px-2 py-2">Match</th><th className="px-2 py-2">Engine</th>
+              <th className="px-2 py-2">Pick</th><th className="px-2 py-2">Conf</th>
+              <th className="px-2 py-2">Margin</th><th className="px-2 py-2">Max EV</th>
+              <th className="px-2 py-2">Why</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, 60).map(({ m, a, q }) => (
+              <tr key={m.id} className={`border-t border-zinc-800 ${ticket.includes(m.id) ? 'bg-teal-500/5' : ''}`}>
+                <td className="px-2 py-1.5">
+                  <button onClick={() => toggle(m.id)} className={ticket.includes(m.id) ? 'text-teal-400' : 'text-zinc-600 hover:text-zinc-300'}>
+                    {ticket.includes(m.id) ? '★' : '☆'}
+                  </button>
+                </td>
+                <td className={`px-2 py-1.5 font-bold tabular-nums ${scoreColor(q.score)}`}>{q.score}</td>
+                <td className="px-2 py-1.5 text-zinc-300">{m.home} v {m.away}<span className="ml-1 text-[9px] text-zinc-600">{m.league}</span></td>
+                <td className="px-2 py-1.5 text-[10px] text-zinc-500">{m.gameType === 'jackpot' ? 'JP' : 'STD'}</td>
+                <td className="px-2 py-1.5 uppercase text-zinc-300">{a.pick}</td>
+                <td className="px-2 py-1.5 tabular-nums text-zinc-300">{fmtPct(a.confidence)}</td>
+                <td className="px-2 py-1.5 tabular-nums text-zinc-400">{fmtPct(a.margin)}</td>
+                <td className={`px-2 py-1.5 tabular-nums ${q.maxEV > 0 ? 'text-emerald-400' : 'text-zinc-600'}`}>{q.maxEV > 0 ? `+${fmtPct(q.maxEV)}` : '—'}</td>
+                <td className="px-2 py-1.5 text-[9px] text-zinc-500">{q.reasons.join(' · ')}</td>
+              </tr>
+            ))}
+            {!rows.length && <tr><td colSpan={9} className="px-3 py-6 text-center text-zinc-600">No analyzable fixtures yet — paste a fixture list above.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+===ATLAS_FILE: src/app/atlas/page.tsx===
+'use client';
+import { useRef, useState } from 'react';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import MatchCard from '@/components/atlas/MatchCard';
+import QuickViewTables from '@/components/atlas/QuickViewTables';
+import SummaryPanel from '@/components/atlas/SummaryPanel';
+import SimulationPanel from '@/components/atlas/SimulationPanel';
+import LearningPanel from '@/components/atlas/LearningPanel';
+import CalibrationPanel from '@/components/atlas/CalibrationPanel';
+import APIPicksPanel from '@/components/atlas/APIPicksPanel';
+import ScreenerPanel from '@/components/atlas/ScreenerPanel';
+import ScrapeButton from '@/components/atlas/ScrapeButton';
+
+const TABS = ['Matches', 'Screener', 'Quick View', 'Simulations', 'Learning', 'Backtest', 'API Picks'] as const;
+
+export default function AtlasPage() {
+  const [tab, setTab] = useState<(typeof TABS)[number]>('Matches');
+  const matches = useAtlasStore((s) => s.matches);
+  const phi = useAtlasStore((s) => s.phi);
+  const setPhi = useAtlasStore((s) => s.setPhi);
+  const addMatch = useAtlasStore((s) => s.addMatch);
+  const exportSession = useAtlasStore((s) => s.exportSession);
+  const importSession = useAtlasStore((s) => s.importSession);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const download = () => {
+    const blob = new Blob([exportSession()], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `atlas_v9_session_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+  };
+
+  return (
+    <div className="min-h-screen bg-zinc-950 p-4 md:p-6 text-zinc-100">
+      <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight">
+            ATLAS <span className="text-blue-400">v9.2</span>
+            <span className="ml-2 text-xs font-normal text-zinc-500">
+              Enhanced · hybrid Bayesian calibration · copula HT/FT · adaptive MC · beta-binomial learning · fixture screener
+            </span>
+          </h1>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs">
+            φ threshold <b className="tabular-nums text-blue-400">{phi.toFixed(2)}</b>
+            <input type="range" min={0} max={0.3} step={0.01} value={phi}
+              onChange={(e) => setPhi(parseFloat(e.target.value))} className="w-24 accent-blue-500" />
+          </label>
+          <button onClick={addMatch} className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold hover:bg-blue-500">+ Add Match</button>
+          <button onClick={download} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">Export</button>
+          <button onClick={() => fileRef.current?.click()} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">Import</button>
+          <input ref={fileRef} type="file" accept=".json" className="hidden" onChange={async (e) => {
+            const f = e.target.files?.[0];
+            if (f) importSession(await f.text());
+          }} />
+        </div>
+      </header>
+
+      <nav className="mb-4 flex flex-wrap items-center gap-1.5">
+        {TABS.map((t) => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+              tab === t ? 'bg-zinc-100 text-zinc-950' : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}>
+            {t}
+          </button>
+        ))}
+        <div className="ml-auto"><ScrapeButton /></div>
+      </nav>
+
+      {tab === 'Matches' && (
+        <div className="space-y-4">
+          <SummaryPanel />
+          {matches.length === 0 && (
+            <div className="rounded-xl border border-dashed border-zinc-800 p-10 text-center text-sm text-zinc-600">
+              No matches yet. Click “+ Add Match”, use the Screener to import a fixture list, or import API picks.
+            </div>
+          )}
+          {matches.map((m) => <MatchCard key={m.id} match={m} />)}
+        </div>
+      )}
+      {tab === 'Screener' && <ScreenerPanel />}
+      {tab === 'Quick View' && <QuickViewTables />}
+      {tab === 'Simulations' && <SimulationPanel />}
+      {tab === 'Learning' && <LearningPanel />}
+      {tab === 'Backtest' && <CalibrationPanel />}
+      {tab === 'API Picks' && <APIPicksPanel />}
+
+      <footer className="mt-8 text-center text-[10px] text-zinc-700">
+        ATLAS v9.2 · 100% client-side computation · Standard ρ=-0.13 / Jackpot ρ=-0.08 · MC is a cross-check, never the primary model
+      </footer>
+    </div>
+  );
+}
