@@ -1,9 +1,11 @@
 // ============================================================
-// Fixture parser v9.18 — v9.17 PLUS: a line carrying a
-// dd-mm-yyyy date while the current buffer has NONE yet means
-// the page-header block ended and a new record starts (the
-// clipboard merges "row ID date" into one line, so the bare
-// row-index rule alone can't catch record 1).
+// Fixture parser v9.19 — glue-rule fixes:
+//  • an odds line is appended to an odds buffer ONLY when it
+//    carries NO date (vertical duplicate cell); a date-carrying
+//    line is always a NEW record (horizontal single-line format)
+//  • the header-junk date flush requires buf.length > 6 so
+//    vertical fragments ("1 1587" + date) stay together
+// Keeps all v9.13–v9.18 behavior.
 // ============================================================
 export interface FixtureRow {
   home: string; away: string; league: string; country: string; kickoff: string;
@@ -59,7 +61,7 @@ export function parseFixtureList(text: string): FixtureRow[] {
     return [home, away || w[w.length - 1]];
   };
 
-  // ---------- v9.16-18: rebuild vertical cells into logical lines ----------
+  // ---------- v9.16–19: rebuild vertical cells into logical lines ----------
   const rawLines = text.split(/\n/).map(clean).filter(Boolean);
   const lines: string[] = [];
   let buf: string[] = [];
@@ -72,12 +74,12 @@ export function parseFixtureList(text: string): FixtureRow[] {
     if (!buf.length) { buf = [L]; continue; }
     const bt = buf.join(' ');
     if (hasOdds(bt)) {
-      if (hasOdds(L)) { if (buf[buf.length - 1] !== L) buf.push(L); }
+      // v9.19: append ONLY date-less odds cells; dated line = new record
+      if (hasOdds(L) && !hasDate(L)) { if (buf[buf.length - 1] !== L) buf.push(L); }
       else { flush(); buf = [L]; }
     } else if (hasDate(bt) || /\d/.test(bt)) {
-      // v9.17/18: new record when a bare row-index lands after long junk,
-      // OR a dd-mm-yyyy date arrives while the buffer has none yet
-      const newRec = (/^\d{1,2}$/.test(L) && buf.length > 6) || (hasDate(L) && !hasDate(bt));
+      const newRec = (/^\d{1,2}$/.test(L) && buf.length > 6) ||
+                     (hasDate(L) && !hasDate(bt) && buf.length > 6);
       if (newRec) { flush(); buf = [L]; }
       else if (buf[buf.length - 1] !== L) buf.push(L);
     } else {
