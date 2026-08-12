@@ -1,10 +1,9 @@
 // ============================================================
-// Fixture parser v9.14 — adds the space-separated SportPesa
-// row format: "ID DD-MM-YYYY - HH:MM TeamOne TeamTwo <odds…>"
-// (no pipes, no "vs"). Team blob split at word midpoint with a
-// year-token fix ("Durban City FC 2024 Golden Arrows").
-// Keeps: pipe rows + 10-odds mapping, generic vs rows, headers
-// with country split, garbage-header filter (v9.13).
+// Fixture parser v9.15 — space-row branch now accepts the
+// jackpot PDF copy shape: up to TWO leading IDs, date+time with
+// OR without a dash, and a country token between teams & odds
+// ("1 1587 14-08-2026 19:30 Eintracht Braunschweig VfL Bochum
+//  Germany 2.48 3.30 2.75 …"). Keeps v9.13/v9.14 features.
 // ============================================================
 export interface FixtureRow {
   home: string; away: string; league: string; country: string; kickoff: string;
@@ -16,9 +15,18 @@ const GARBAGE = [
   /home\s+draw\s+away/i, /3 way/i, /double chance/i, /over\/under/i, /both teams/i,
   /^id\b/i, /team 1/i, /team 2/i, /\bdate\b/i, /sportpesa/i, /paybill/i,
   /legal/i, /licence/i, /1 or x/i, /x or 2/i, /\byes\s+no\b/i, /quick pick/i,
+  /only 18\+/i, /gambling may/i, /licensed and regulated/i,
 ];
 const isGarbage = (s: string) => GARBAGE.some((r) => r.test(s));
 const clean = (s: string) => s.replace(/\|/g, ' ').replace(/\s+/g, ' ').trim();
+
+const COUNTRIES = new Set([
+  'Germany', 'Russia', 'Sweden', 'Norway', 'France', 'Belgium', 'Netherlands', 'Austria',
+  'Spain', 'England', 'Scotland', 'Wales', 'Denmark', 'Finland', 'Iceland', 'Turkey',
+  'Serbia', 'Poland', 'Portugal', 'Czechia', 'Kazakhstan', 'USA', 'Brazil', 'Argentina',
+  'South', 'Mozambique', 'Chile', 'Japan', 'Australia', 'Croatia', 'Greece', 'Switzerland',
+  'Romania', 'Hungary', 'Ukraine', 'Ireland', 'Estonia', 'Latvia', 'Lithuania', 'Slovenia',
+]);
 
 export function parseFixtureList(text: string): FixtureRow[] {
   const rows: FixtureRow[] = [];
@@ -100,14 +108,23 @@ export function parseFixtureList(text: string): FixtureRow[] {
       continue;
     }
 
-    // ---------- v9.14: space-separated rows (ID date - time teams odds) ----------
-    const sp = flat.match(/^(\d{3,5})\s+(\d{2}-\d{2}-\d{4})\s*-\s*(\d{1,2}:\d{2})\s+(.+)$/);
+    // ---------- v9.15: space rows (0-2 IDs, date±dash time, optional country) ----------
+    const sp = flat.match(
+      /^(?:(\d{1,5})\s+)?(?:(\d{1,5})\s+)?(\d{2}-\d{2}-\d{4})\s*-?\s*(\d{1,2}:\d{2})\s+(.+)$/,
+    );
     if (sp) {
-      const om = sp[4].match(/^(.*?)\s+((?:\d+\.\d+\s+){2,}\d+\.\d+)$/);
+      const om = sp[5].match(/^(.*?)\s+((?:\d+\.\d+\s+){2,}\d+\.\d+)$/);
       if (om) {
         const od = om[2].split(/\s+/).map(parseFloat);
         if (od.length >= 3) {
-          const [home, away] = splitTeams(om[1].trim());
+          const words = om[1].trim().split(' ');
+          let ctry = '';
+          if (words.length >= 4 && COUNTRIES.has(words[words.length - 1])) {
+            ctry = words.pop() ?? '';
+            if (ctry === 'South' && words.length && /^(Africa|Korea)$/i.test(words[words.length - 1]))
+              ctry = 'South ' + words.pop();
+          }
+          const [home, away] = splitTeams(words.join(' '));
           const u: Record<string, number> = {};
           if (od.length >= 9) {
             u.dc1X = od[3]; u.dcX2 = od[4]; u.dc12 = od[5];
@@ -115,7 +132,7 @@ export function parseFixtureList(text: string): FixtureRow[] {
             if (od.length >= 10) u.bttsNo = od[9];
           }
           rows.push({
-            home, away, league, country, kickoff: `${sp[2]} ${sp[3]}`,
+            home, away, league, country: ctry || country, kickoff: `${sp[3]} ${sp[4]}`,
             h: String(od[0]), d: String(od[1]), a: String(od[2]), userOdds: u,
           });
           continue;
