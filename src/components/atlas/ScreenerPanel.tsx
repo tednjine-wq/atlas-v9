@@ -30,7 +30,6 @@ export default function ScreenerPanel() {
           const a = atlasAnalyseJackpotV9(m, phi);
           return { m, a, q: qualityJackpot(a), ext: null };
         }
-        // v9.6: Standard rows are screened on EXTENDED-market edge too
         const a = atlasAnalyseV9(m, phi, standardParams);
         const ext = computeExtendedMarketsV9(
           a.scoreMatrix, a.calibration.lambdaH, a.calibration.lambdaA,
@@ -72,6 +71,12 @@ export default function ScreenerPanel() {
   };
 
   const ticketShape = rows.map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
+
+  // v9.9 divergence guard (E0 evidence): EV > 6% only trusted on soft books (margin >= 8%)
+  const stdShape = rows
+    .filter((r) => r.m.gameType !== 'jackpot')
+    .filter((r) => r.q.maxEV <= 0.06 || r.a.margin >= 0.08)
+    .map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
 
   const toggle = (id: string) =>
     setTicket((t) => (t.includes(id) ? t.filter((x) => x !== id) : [...t, id]));
@@ -116,9 +121,10 @@ export default function ScreenerPanel() {
           className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-500">
           🎰 Auto-Build Jackpot Ticket (8 legs, ≤2 per league)
         </button>
-        <button onClick={() => setTicket(buildStandardSlate(ticketShape))}
+        <button onClick={() => setTicket(buildStandardSlate(stdShape))}
+          title="Divergence guard: EV > 6% only included on soft books (margin ≥ 8%)"
           className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500">
-          📊 Auto-Build Standard Slate (top 5 +EV, incl. extended markets)
+          📊 Auto-Build Standard Slate (EV-guarded)
         </button>
         {ticket.length > 0 && (
           <button onClick={() => setTicket([])} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800">
@@ -164,7 +170,9 @@ export default function ScreenerPanel() {
                 <td className="px-2 py-1.5 tabular-nums text-zinc-400">{fmtPct(a.margin)}</td>
                 <td className="px-2 py-1.5 tabular-nums">
                   {ext ? (
-                    <span className="text-emerald-400">+{fmtPct(ext.ev)} {ext.label} @{ext.odds.toFixed(2)}</span>
+                    <span className={ext.ev > 0.06 && a.margin < 0.08 ? 'text-amber-400' : 'text-emerald-400'}>
+                      +{fmtPct(ext.ev)} {ext.label} @{ext.odds.toFixed(2)}{ext.ev > 0.06 && a.margin < 0.08 ? ' ⚠' : ''}
+                    </span>
                   ) : q.maxEV > 0 ? (
                     <span className="text-emerald-400">+{fmtPct(q.maxEV)}</span>
                   ) : (
