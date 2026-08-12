@@ -10,9 +10,10 @@ import CalibrationPanel from '@/components/atlas/CalibrationPanel';
 import APIPicksPanel from '@/components/atlas/APIPicksPanel';
 import ScreenerPanel from '@/components/atlas/ScreenerPanel';
 import JackpotLabPanel from '@/components/atlas/JackpotLabPanel';
+import StandardLabPanel from '@/components/atlas/StandardLabPanel';
 import ScrapeButton from '@/components/atlas/ScrapeButton';
 
-const TABS = ['Matches', 'Screener', 'Jackpot Lab', 'Quick View', 'Simulations', 'Learning', 'Backtest', 'API Picks'] as const;
+const TABS = ['Matches', 'Screener', 'Jackpot Lab', 'Standard Lab', 'Quick View', 'Simulations', 'Learning', 'Backtest', 'API Picks'] as const;
 
 export default function AtlasPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]>('Matches');
@@ -43,9 +44,9 @@ export default function AtlasPage() {
       <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold tracking-tight">
-            ATLAS <span className="text-blue-400">v9.5</span>
+            ATLAS <span className="text-blue-400">v9.9</span>
             <span className="ml-2 text-xs font-normal text-zinc-500">
-              Enhanced · hybrid Bayesian calibration · copula HT/FT · adaptive MC · beta-binomial learning · fixture screener · jackpot lab
+              Enhanced · hybrid Bayesian calibration · copula HT/FT · adaptive MC · beta-binomial learning · fixture screener · jackpot lab · standard lab
             </span>
           </h1>
         </div>
@@ -97,6 +98,7 @@ export default function AtlasPage() {
       )}
       {tab === 'Screener' && <ScreenerPanel />}
       {tab === 'Jackpot Lab' && <JackpotLabPanel />}
+      {tab === 'Standard Lab' && <StandardLabPanel />}
       {tab === 'Quick View' && <QuickViewTables />}
       {tab === 'Simulations' && <SimulationPanel />}
       {tab === 'Learning' && <LearningPanel />}
@@ -104,7 +106,7 @@ export default function AtlasPage() {
       {tab === 'API Picks' && <APIPicksPanel />}
 
       <footer className="mt-8 text-center text-[10px] text-zinc-700">
-        ATLAS v9.5 · 100% client-side computation · Standard ρ=-0.13 / Jackpot ρ=-0.08 · MC is a cross-check, never the primary model
+        ATLAS v9.9 · 100% client-side computation · Standard ρ=-0.13 / Jackpot ρ=-0.08 · MC is a cross-check, never the primary model
       </footer>
     </div>
   );
