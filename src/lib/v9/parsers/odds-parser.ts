@@ -1,10 +1,10 @@
 // ============================================================
-// Smart Paste v7 — fixes the "label eaten as data" bug:
-// lines like "OVER 0.50" / "UNDER 1.50" contain numbers and were
-// consumed as data rows, orphaning the real odds line. v7 treats
-// known label shapes as pending labels FIRST. Adds sections:
-// Total Goals Exactly, Asian Handicap FT. Keeps v6 scoping,
-// vertical pairs, 3-WAY main capture, pipe/date rejection.
+// Smart Paste v8 — v8 pre-merges vertical label/odds pairs for
+// over/under lines and bracketed AH lines BEFORE the main loop
+// ("OVER 1.5" + "1.35" → "OVER 1.5 : 1.35"), making capture
+// independent of pending-state edge cases. AH resolver reads
+// brackets from the RAW label. HT/FT aliases corrected.
+// Keeps v6 scoping, v7 sections (exact, ahFT), 3-WAY main capture.
 // ============================================================
 export type PasteProfile = 'auto' | 'sportpesa' | 'betika';
 export interface ParseOpts { profile?: PasteProfile; home?: string; away?: string; }
@@ -14,10 +14,8 @@ export interface ParsedOdds {
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
-const stripB = (s: string) => s.replace(/[\[\]]/g, '');
 const cleanLine = (s: string) => s.replace(/\|/g, ' ').trim();
 
-// lines that are ALWAYS labels, never data (even if they contain numbers)
 const LABEL_LIKE = /^(over|under)\s|^(yes|no)\s*\(|^(1|x|2)\s*(and|&)\s|^(1 or x|x or 2|1 or 2)$|^\d+ or \d+ goal|^6 or more$|^\d+:\d+$|^any other$|^(home|away|draw|neither|odd|even|1st|2nd)$|^[a-z0-9'. -]+\[[+-]?\d+\.\d+\]$|^(1|x|2)\s\(|^\d$/i;
 
 const SECTION_RE: { re: RegExp; id: string }[] = [
@@ -70,7 +68,7 @@ function ouKey(dir: 'over' | 'under', line: number, prefix: '' | 'ht' | 'home' |
 }
 
 function resolveIn(sec: string, label: string, rowInSec: number): string | null {
-  const l = norm(stripB(label));
+  const l = norm(label);
   const ou = l.match(/^(over|under)\s*(\d+(?:\.\d+)?)$/);
   const isD = /^(draw|x)$/.test(l);
   switch (sec) {
@@ -101,11 +99,10 @@ function resolveIn(sec: string, label: string, rowInSec: number): string | null 
     case 'awayOU': return ou ? ouKey(ou[1] as 'over' | 'under', parseFloat(ou[2]), 'away') : null;
     case 'athtHT': return ou ? ouKey(ou[1] as 'over' | 'under', parseFloat(ou[2]), 'atht') : null;
     case 'ahFT': {
-      const m = l.match(/\[\s*([+-]?\d+(?:\.\d+)?)\s*\]/);
+      const m = l.match(/\[\s*([+-]?\d+(?:\.\d+)?)\s*\]/);   // raw label keeps brackets
       if (!m) return null;
-      const line = parseFloat(m[1]);
       const pos = m[1].startsWith('+');
-      const lk = String(Math.abs(line)).replace(/^0\.?0*$/, '0');
+      const lk = String(Math.abs(parseFloat(m[1])));
       return pos ? `ah${lk}` : `ah${lk}_a`;
     }
     case 'fts':
@@ -169,7 +166,18 @@ export function parseSmartPaste(text: string, _opts: ParseOpts = {}): ParsedOdds
   let main: { h: number; d: number; a: number } | undefined;
   if (!text || !text.trim()) return { odds, count: 0, unmatched };
 
-  const lines = text.split(/\n/).map(cleanLine).filter(Boolean);
+  const raw = text.split(/\n/).map(cleanLine).filter(Boolean);
+
+  // v8: pre-merge vertical pairs for over/under + bracketed AH lines
+  const lines: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const cur = raw[i], nxt = raw[i + 1];
+    if (nxt && /^\d+\.\d+$/.test(nxt) && (/^(over|under)\s/i.test(cur) || /\[[+-]?\d+(?:\.\d+)?\]$/.test(cur))) {
+      lines.push(`${cur} : ${nxt}`);
+      i++;
+    } else lines.push(cur);
+  }
+
   let sec: string | null = null;
   let rowInSec = 0;
   let pending: string | null = null;
@@ -190,33 +198,29 @@ export function parseSmartPaste(text: string, _opts: ParseOpts = {}): ParsedOdds
       if (key) { odds[key] = val; rowInSec++; } else unmatched.push(`${label} ${val}`);
       return;
     }
-    const l = norm(stripB(label));
+    const l = norm(label);
     const key = LABEL_MAP[l] ?? HTFT_ALIASES[l] ?? null;
     if (key) odds[key] = val; else unmatched.push(`${label} ${val}`);
   };
 
   for (const line of lines) {
     if (/\d{2}-\d{2}-\d{4}/.test(line)) continue;
-    const low = norm(stripB(line));
+    const low = norm(line);
     const hdr = SECTION_RE.find((s) => s.re.test(low));
     if (hdr && !/\d\.\d{2}/.test(line)) { sec = hdr.id; rowInSec = 0; pending = null; continue; }
 
-    // v7: known label shapes become pending labels even if they contain numbers
-    if (LABEL_LIKE.test(line)) { pending = line; continue; }
-
-    if (/^\d+\.\d+$/.test(line) && pending) {
-      const label = pending;
-      pending = null;
-      sink(label, parseFloat(line));
-      continue;
-    }
-
     const m = line.match(/^(.+?)\s*[:\t]\s*(\d+\.\d+)\s*$/) ||
-              line.match(/^(.+?)\s{2,}(\d+\.\d+)\s*$/) ||
-              (sec ? line.match(/^(.+?)\s+(\d+\.\d+)$/) : null);
-    if (!m) { pending = line; continue; }
-    pending = null;
-    sink(m[1], parseFloat(m[2]));
+              line.match(/^(.+?)\s{2,}(\d+\.\d+)\s*$/);
+    if (m) { pending = null; sink(m[1], parseFloat(m[2])); continue; }
+
+    if (!/:/.test(line) && LABEL_LIKE.test(line)) { pending = line; continue; }
+
+    if (/^\d+\.\d+$/.test(line) && pending) { sink(pending, parseFloat(line)); pending = null; continue; }
+
+    const ms = sec ? line.match(/^(.+?)\s+(\d+\.\d+)$/) : null;
+    if (ms) { pending = null; sink(ms[1], parseFloat(ms[2])); continue; }
+
+    pending = line;
   }
   if (main && !(main.h > 1 && main.d > 1 && main.a > 1)) main = undefined;
   return { odds, count: Object.keys(odds).length, unmatched, main };
