@@ -11,12 +11,12 @@ interface Report {
   pickHits: number; pickProfit: number;
   brier: number;
   flags: number; flagHits: number; flagProfit: number;
-  flaglessProfit: number;
 }
 
+// v9.9 fix: key suffixes are tenths ("25" = 2.5) — divide by 10
 function settleKey(key: string, i: number, j: number): boolean | null {
-  let m = key.match(/^over(\d+)$/); if (m) return i + j > +m[1];
-  m = key.match(/^under(\d+)$/); if (m) return i + j < +m[1];
+  let m = key.match(/^over(\d+)$/); if (m) return i + j > +m[1] / 10;
+  m = key.match(/^under(\d+)$/); if (m) return i + j < +m[1] / 10;
   if (key === 'bttsYes') return i > 0 && j > 0;
   if (key === 'bttsNo') return !(i > 0 && j > 0);
   if (key === 'dc1X') return i >= j;
@@ -58,7 +58,7 @@ export default function StandardLabPanel() {
     const iBTA = hs.findIndex((h) => h === 'B365BTA' || /BTA$/.test(h));
 
     const rep: Report = { total: 0, analyzed: 0, pickHits: 0, pickProfit: 0, brier: 0,
-                          flags: 0, flagHits: 0, flagProfit: 0, flaglessProfit: 0 };
+                          flags: 0, flagHits: 0, flagProfit: 0 };
 
     const rows = lines.slice(1);
     for (let b = 0; b < rows.length; b += 25) {           // Rule 10.3 batching
