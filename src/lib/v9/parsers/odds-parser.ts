@@ -1,11 +1,10 @@
 // ============================================================
-// Smart Paste v6 — header-ordering fixes on top of v5:
-//  • "RESULT + BOTH TEAMS" / "RESULT + TOTAL GOALS" matched
-//    BEFORE generic BTTS / O-U headers (fixes BTTS @12/@16 leak)
-//  • home/away team-goals header variants recognized
-//  • "1X2 (nUP)" blocks skipped; "and"-combos can't leak into
-//    btts/ouFT; pipes stripped from copied lines.
-// Vertical pairs + section scoping + 3-WAY main capture kept.
+// Smart Paste v7 — fixes the "label eaten as data" bug:
+// lines like "OVER 0.50" / "UNDER 1.50" contain numbers and were
+// consumed as data rows, orphaning the real odds line. v7 treats
+// known label shapes as pending labels FIRST. Adds sections:
+// Total Goals Exactly, Asian Handicap FT. Keeps v6 scoping,
+// vertical pairs, 3-WAY main capture, pipe/date rejection.
 // ============================================================
 export type PasteProfile = 'auto' | 'sportpesa' | 'betika';
 export interface ParseOpts { profile?: PasteProfile; home?: string; away?: string; }
@@ -17,6 +16,9 @@ export interface ParsedOdds {
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
 const stripB = (s: string) => s.replace(/[\[\]]/g, '');
 const cleanLine = (s: string) => s.replace(/\|/g, ' ').trim();
+
+// lines that are ALWAYS labels, never data (even if they contain numbers)
+const LABEL_LIKE = /^(over|under)\s|^(yes|no)\s*\(|^(1|x|2)\s*(and|&)\s|^(1 or x|x or 2|1 or 2)$|^\d+ or \d+ goal|^6 or more$|^\d+:\d+$|^any other$|^(home|away|draw|neither|odd|even|1st|2nd)$|^[a-z0-9'. -]+\[[+-]?\d+\.\d+\]$|^(1|x|2)\s\(|^\d$/i;
 
 const SECTION_RE: { re: RegExp; id: string }[] = [
   { re: /first team to score/, id: 'fts' },
@@ -35,12 +37,15 @@ const SECTION_RE: { re: RegExp; id: string }[] = [
   { re: /over\/under\s+away\s+team|away\s+team\s*-\s*full\s+time/, id: 'awayOU' },
   { re: /over\/under\s*-\s*half time/, id: 'ouHT' },
   { re: /over\/under\s*-\s*full time/, id: 'ouFT' },
+  { re: /total goals exactly/, id: 'exact' },
   { re: /number of goals in groups/, id: 'groups' },
   { re: /correct score\s*-\s*first half/, id: 'htcs' },
   { re: /correct score/, id: 'cs' },
   { re: /half with most goals/, id: 'hmost' },
   { re: /half time\/full time/, id: 'htft' },
   { re: /euro handicap/, id: 'eh' },
+  { re: /asian handicap\s*-\s*half time/, id: 'skip' },
+  { re: /asian handicap/, id: 'ahFT' },
   { re: /odd\s*\/?\s*even/, id: 'oe' },
 ];
 
@@ -56,7 +61,7 @@ function ouKey(dir: 'over' | 'under', line: number, prefix: '' | 'ht' | 'home' |
     '': ['05', '15', '25', '35', '45'],
     ht: ['05', '15'],
     home: ['05', '15', '25', '35'],
-    away: ['05', '15', '25'],
+    away: ['05', '15', '25', '35'],
     atht: ['075', '100'],
   };
   const k = map[String(line)];
@@ -70,7 +75,7 @@ function resolveIn(sec: string, label: string, rowInSec: number): string | null 
   const isD = /^(draw|x)$/.test(l);
   switch (sec) {
     case 'btts':
-      if (/\band\b|\d/.test(l)) return null; // combos must not leak here
+      if (/\band\b|\d/.test(l)) return null;
       return /yes|gg/.test(l) ? 'bttsYes' : /no|ng/.test(l) ? 'bttsNo' : null;
     case 'bttsHT': return /yes|gg/.test(l) ? 'bttsHTYes' : /no|ng/.test(l) ? 'bttsHTNo' : null;
     case 'dc':
@@ -84,6 +89,10 @@ function resolveIn(sec: string, label: string, rowInSec: number): string | null 
       if (/^4 or 5/.test(l)) return 'group45';
       if (/^6 or more/.test(l)) return 'group6p';
       return null;
+    case 'exact':
+      if (/^6 or more/.test(l)) return 'exact6plus';
+      if (/^\d$/.test(l)) return `exact${l}`;
+      return null;
     case 'ouFT':
       if (/\band\b/.test(l)) return null;
       return ou ? ouKey(ou[1] as 'over' | 'under', parseFloat(ou[2]), '') : null;
@@ -91,6 +100,14 @@ function resolveIn(sec: string, label: string, rowInSec: number): string | null 
     case 'homeOU': return ou ? ouKey(ou[1] as 'over' | 'under', parseFloat(ou[2]), 'home') : null;
     case 'awayOU': return ou ? ouKey(ou[1] as 'over' | 'under', parseFloat(ou[2]), 'away') : null;
     case 'athtHT': return ou ? ouKey(ou[1] as 'over' | 'under', parseFloat(ou[2]), 'atht') : null;
+    case 'ahFT': {
+      const m = l.match(/\[\s*([+-]?\d+(?:\.\d+)?)\s*\]/);
+      if (!m) return null;
+      const line = parseFloat(m[1]);
+      const pos = m[1].startsWith('+');
+      const lk = String(Math.abs(line)).replace(/^0\.?0*$/, '0');
+      return pos ? `ah${lk}` : `ah${lk}_a`;
+    }
     case 'fts':
       if (/neither/.test(l)) return 'ftsNeither';
       if (/^1$|home/.test(l)) return 'ftsHome';
@@ -182,7 +199,10 @@ export function parseSmartPaste(text: string, _opts: ParseOpts = {}): ParsedOdds
     if (/\d{2}-\d{2}-\d{4}/.test(line)) continue;
     const low = norm(stripB(line));
     const hdr = SECTION_RE.find((s) => s.re.test(low));
-    if (hdr && !/\d\.\d+/.test(line)) { sec = hdr.id; rowInSec = 0; pending = null; continue; }
+    if (hdr && !/\d\.\d{2}/.test(line)) { sec = hdr.id; rowInSec = 0; pending = null; continue; }
+
+    // v7: known label shapes become pending labels even if they contain numbers
+    if (LABEL_LIKE.test(line)) { pending = line; continue; }
 
     if (/^\d+\.\d+$/.test(line) && pending) {
       const label = pending;
