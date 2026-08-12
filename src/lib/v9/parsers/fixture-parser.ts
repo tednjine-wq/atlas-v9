@@ -1,9 +1,9 @@
 // ============================================================
-// Fixture parser v9.16 — reconstruction pre-pass: vertical
-// pipe cells (one per line, as the jackpot PDF copies) are
-// glued into logical rows; identical consecutive lines and
-// duplicated odds cells are collapsed. Then v9.13-v9.15
-// branches parse the normalized rows (pipe, space, vs, headers).
+// Fixture parser v9.17 — v9.16 reconstruction PLUS: a bare
+// row-index line (1..60) arriving after a long junk buffer
+// (page headers: "SportPesa", "JACKPOT KSH…", column titles)
+// flushes that buffer and starts a fresh record, so the FIRST
+// fixture of each page is never glued into the header garbage.
 // ============================================================
 export interface FixtureRow {
   home: string; away: string; league: string; country: string; kickoff: string;
@@ -59,7 +59,7 @@ export function parseFixtureList(text: string): FixtureRow[] {
     return [home, away || w[w.length - 1]];
   };
 
-  // ---------- v9.16: rebuild vertical cells into logical lines ----------
+  // ---------- v9.16/17: rebuild vertical cells into logical lines ----------
   const rawLines = text.split(/\n/).map(clean).filter(Boolean);
   const lines: string[] = [];
   let buf: string[] = [];
@@ -72,14 +72,13 @@ export function parseFixtureList(text: string): FixtureRow[] {
     if (!buf.length) { buf = [L]; continue; }
     const bt = buf.join(' ');
     if (hasOdds(bt)) {
-      // record in progress: append odds cells (skip exact duplicates), flush on non-odds
       if (hasOdds(L)) { if (buf[buf.length - 1] !== L) buf.push(L); }
       else { flush(); buf = [L]; }
     } else if (hasDate(bt) || /\d/.test(bt)) {
-      // vertical record fragment (ids/date/teams): append, skip duplicate cells
-      if (buf[buf.length - 1] !== L) buf.push(L);
+      // v9.17: bare row-index after a long junk buffer = new record
+      if (/^\d{1,2}$/.test(L) && buf.length > 6) { flush(); buf = [L]; }
+      else if (buf[buf.length - 1] !== L) buf.push(L);
     } else {
-      // header-ish buffer: flush when a record token arrives
       if (isInt(L) || hasDate(L) || hasOdds(L)) { flush(); buf = [L]; }
       else if (buf[buf.length - 1] !== L) buf.push(L);
     }
@@ -93,7 +92,6 @@ export function parseFixtureList(text: string): FixtureRow[] {
 
     const nums = (flat.match(/\d+\.\d+/g) || []).map(parseFloat);
 
-    // pipe-style (horizontal) rows
     if (flat.includes('|')) {
       const cells = flat.split('|').map((c) => c.trim()).filter((c) => c.length);
       if (cells.length <= 2 && !nums.length) { setHeader(cells[0] ?? ''); continue; }
@@ -131,7 +129,6 @@ export function parseFixtureList(text: string): FixtureRow[] {
       continue;
     }
 
-    // space rows (0-2 IDs, date±dash time, optional country)
     const sp = flat.match(
       /^(?:(\d{1,5})\s+)?(?:(\d{1,5})\s+)?(\d{2}-\d{2}-\d{4})\s*-?\s*(\d{1,2}:\d{2})\s+(.+)$/,
     );
@@ -163,7 +160,6 @@ export function parseFixtureList(text: string): FixtureRow[] {
       }
     }
 
-    // generic rows: [time] Home vs Away h d a
     const m = flat.match(
       /^(?:(\d{1,2}:\d{2})\s+)?(.+?)\s+(?:vs\.?|v)\s+(.+?)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)$/i,
     );
@@ -176,7 +172,6 @@ export function parseFixtureList(text: string): FixtureRow[] {
       continue;
     }
 
-    // header lines
     if (!nums.length && flat.length < 70) setHeader(flat);
   }
   return rows;
