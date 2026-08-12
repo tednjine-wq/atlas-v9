@@ -15,7 +15,6 @@ interface Report {
   lo: Bucket; mid: Bucket; hi: Bucket;
 }
 
-// key suffixes are tenths ("25" = 2.5)
 function settleKey(key: string, i: number, j: number): boolean | null {
   let m = key.match(/^over(\d+)$/); if (m) return i + j > +m[1] / 10;
   m = key.match(/^under(\d+)$/); if (m) return i + j < +m[1] / 10;
@@ -34,9 +33,21 @@ function settleKey(key: string, i: number, j: number): boolean | null {
   return null;
 }
 
+const merge = (a: Report | null, r: Report): Report => a ? {
+  total: a.total + r.total, analyzed: a.analyzed + r.analyzed,
+  pickHits: a.pickHits + r.pickHits, pickProfit: a.pickProfit + r.pickProfit,
+  brier: a.brier + r.brier,
+  flags: a.flags + r.flags, flagHits: a.flagHits + r.flagHits, flagProfit: a.flagProfit + r.flagProfit,
+  lo: { n: a.lo.n + r.lo.n, hits: a.lo.hits + r.lo.hits, profit: a.lo.profit + r.lo.profit },
+  mid: { n: a.mid.n + r.mid.n, hits: a.mid.hits + r.mid.hits, profit: a.mid.profit + r.mid.profit },
+  hi: { n: a.hi.n + r.hi.n, hits: a.hi.hits + r.hi.hits, profit: a.hi.profit + r.hi.profit },
+} : r;
+
 export default function StandardLabPanel() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [report, setReport] = useState<Report | null>(null);
+  const [agg, setAgg] = useState<Report | null>(null);
+  const [files, setFiles] = useState(0);
   const [busy, setBusy] = useState(false);
   const [fileName, setFileName] = useState('');
 
@@ -117,6 +128,8 @@ export default function StandardLabPanel() {
     }
 
     setReport(rep);
+    setAgg((prev) => merge(prev, rep));
+    setFiles((f) => f + 1);
     setBusy(false);
   };
 
@@ -136,18 +149,45 @@ export default function StandardLabPanel() {
       <div className="text-[9px] text-zinc-600">{b.n} bets</div>
     </div>
   );
+  const block = (title: string, r: Report) => (
+    <div className="space-y-3">
+      <h4 className="text-[10px] font-bold uppercase text-zinc-500">{title}</h4>
+      <div className="grid grid-cols-3 gap-3 md:grid-cols-6">
+        {card(`${r.analyzed}`, 'matches analyzed')}
+        {card(fmtPct(r.analyzed ? r.pickHits / r.analyzed : 0), '1X2 pick hit rate', 'text-blue-400')}
+        {card((r.analyzed ? r.brier / r.analyzed : 0).toFixed(3), 'Brier (baseline 0.667)')}
+        {card(`${r.flags}`, 'extended +EV flags', 'text-amber-400')}
+        {card(r.flags ? fmtPct(r.flagHits / r.flags) : '—', 'flag hit rate', 'text-amber-400')}
+        {card(`${r.flagProfit >= 0 ? '+' : ''}${r.flagProfit.toFixed(1)}u`,
+          'flag P/L (flat 1u)', r.flagProfit > 0 ? 'text-emerald-400' : 'text-rose-400')}
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        {bCard('EV 0–3%', r.lo)}
+        {bCard('EV 3–6%', r.mid)}
+        {bCard('EV > 6%', r.hi)}
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-blue-500/25 bg-zinc-900/60 p-3">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-xs font-bold text-blue-400">
-            STANDARD LAB — out-of-sample validation (football-data.co.uk CSV)
+            STANDARD LAB — out-of-sample validation (football-data.co.uk CSV, cumulative)
           </h3>
-          <button onClick={() => fileRef.current?.click()}
-            className="rounded-lg border border-zinc-700 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-800">
-            Upload season CSV
-          </button>
+          <div className="flex items-center gap-2">
+            {agg && (
+              <button onClick={() => { setAgg(null); setFiles(0); }}
+                className="rounded-lg border border-rose-500/30 px-2 py-1 text-[10px] text-rose-400 hover:bg-rose-500/10">
+                Reset aggregate
+              </button>
+            )}
+            <button onClick={() => fileRef.current?.click()}
+              className="rounded-lg border border-zinc-700 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-800">
+              Upload season CSV
+            </button>
+          </div>
           <input ref={fileRef} type="file" accept=".csv" className="hidden"
             onChange={async (e) => {
               const f = e.target.files?.[0];
@@ -155,39 +195,23 @@ export default function StandardLabPanel() {
             }} />
         </div>
         <div className="text-[10px] text-zinc-500">
-          {fileName || 'Suggested: E0.csv (England 25/26) — then SP1, D1, I1, F1 for volume.'}
+          {fileName || 'Upload E0, then SP1, D1, I1, F1 — the aggregate stacks all files.'}
           {' '}Every +EV flag settled vs the real score at flat 1u; buckets show which EV size earns.
         </div>
       </div>
 
       {busy && <div className="text-xs text-zinc-400">Crunching season… (batched, UI stays live)</div>}
 
-      {report && (
-        <>
-          <div className="grid grid-cols-3 gap-3 md:grid-cols-6">
-            {card(`${report.analyzed}`, 'matches analyzed')}
-            {card(fmtPct(report.analyzed ? report.pickHits / report.analyzed : 0), '1X2 pick hit rate', 'text-blue-400')}
-            {card((report.analyzed ? report.brier / report.analyzed : 0).toFixed(3), 'Brier (baseline 0.667)')}
-            {card(`${report.flags}`, 'extended +EV flags', 'text-amber-400')}
-            {card(report.flags ? fmtPct(report.flagHits / report.flags) : '—', 'flag hit rate', 'text-amber-400')}
-            {card(`${report.flagProfit >= 0 ? '+' : ''}${report.flagProfit.toFixed(1)}u`,
-              'flag P/L (flat 1u)', report.flagProfit > 0 ? 'text-emerald-400' : 'text-rose-400')}
-          </div>
+      {report && block(`Last file (${fileName})`, report)}
+      {agg && files > 1 && block(`Cumulative — ${files} files`, agg)}
 
-          <div className="grid grid-cols-3 gap-3">
-            {bCard('EV 0–3% (margin noise?)', report.lo)}
-            {bCard('EV 3–6%', report.mid)}
-            {bCard('EV > 6% (real divergence?)', report.hi)}
-          </div>
-
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-[11px] text-zinc-400">
-            Baseline blind 1X2 P/L:{' '}
-            <b className={report.pickProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-              {report.pickProfit >= 0 ? '+' : ''}{report.pickProfit.toFixed(1)}u
-            </b>{' '}over {report.analyzed} bets. The bucket that turns positive is your betting floor:
-            only take SportPesa flags at or above it.
-          </div>
-        </>
+      {agg && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-[11px] text-zinc-400">
+          Cumulative blind 1X2 P/L:{' '}
+          <b className={agg.pickProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+            {agg.pickProfit >= 0 ? '+' : ''}{agg.pickProfit.toFixed(1)}u
+          </b>{' '}over {agg.analyzed} bets. The bucket that stays positive at ~2,000 bets is your betting floor.
+        </div>
       )}
     </div>
   );
