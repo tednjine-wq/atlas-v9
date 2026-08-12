@@ -1,12 +1,10 @@
 // ============================================================
-// Fixture parser v9.13 — fixes field population:
-//  • "Country - League" headers split into country + league
-//  • column-header garbage ("Home Draw Away 1 or X…", "ID DATE…")
-//    can never become a league
-//  • pipe rows with a country column populate country
-//  • jackpot-style blob team cells split heuristically
-// Keeps: pipe rows w/ 10-odds mapping, generic "vs" rows,
-// date lines, time prefixes.
+// Fixture parser v9.14 — adds the space-separated SportPesa
+// row format: "ID DD-MM-YYYY - HH:MM TeamOne TeamTwo <odds…>"
+// (no pipes, no "vs"). Team blob split at word midpoint with a
+// year-token fix ("Durban City FC 2024 Golden Arrows").
+// Keeps: pipe rows + 10-odds mapping, generic vs rows, headers
+// with country split, garbage-header filter (v9.13).
 // ============================================================
 export interface FixtureRow {
   home: string; away: string; league: string; country: string; kickoff: string;
@@ -40,6 +38,19 @@ export function parseFixtureList(text: string): FixtureRow[] {
     }
   };
 
+  const splitTeams = (blob: string): [string, string] => {
+    const w = blob.split(' ');
+    const n = Math.ceil(w.length / 2);
+    let home = w.slice(0, n).join(' ');
+    let away = w.slice(n).join(' ');
+    const yr = away.match(/^(19|20)\d{2}/);
+    if (yr && away.split(' ').length > 1) {
+      home += ' ' + yr[0];
+      away = away.replace(/^(19|20)\d{2}\s*/, '');
+    }
+    return [home, away || w[w.length - 1]];
+  };
+
   for (const rawLine of text.split(/\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
@@ -60,22 +71,18 @@ export function parseFixtureList(text: string): FixtureRow[] {
         if (/^\d{2}-\d{2}-\d{4}/.test(c)) {
           const t = c.match(/\d{1,2}:\d{2}/);
           kick = `${c.slice(0, 10)}${t ? ' ' + t[0] : ''}`;
-        } else if (/^\d+$/.test(c)) continue;                    // IDs
-        else if (!/\d\.\d+/.test(c)) teamCells.push(c);         // names / country
+        } else if (/^\d+$/.test(c)) continue;
+        else if (!/\d\.\d+/.test(c)) teamCells.push(c);
       }
 
       if (nums.length >= 3 && teamCells.length >= 2) {
         let home = teamCells[0];
         let away = teamCells[1];
         let ctry = teamCells[2] ?? '';
-        // jackpot blob: "Eintracht Braunschweig VfL Bochum" + "Germany"
         if (teamCells.length === 2 &&
             home.split(' ').length >= 3 && away.split(' ').length <= 2 && !/\d/.test(away)) {
-          const w = home.split(' ');
-          const n = Math.ceil(w.length / 2);
-          ctry = away;
-          home = w.slice(0, n).join(' ');
-          away = w.slice(n).join(' ');
+          [home, away] = splitTeams(home);
+          ctry = teamCells[1];
         }
         const u: Record<string, number> = {};
         if (nums.length >= 10) {
@@ -84,16 +91,36 @@ export function parseFixtureList(text: string): FixtureRow[] {
           u.bttsYes = nums[8]; u.bttsNo = nums[9];
         }
         rows.push({
-          home, away, league,
-          country: ctry || country,
-          kickoff: kick || date,
-          h: String(nums[0]), d: String(nums[1]), a: String(nums[2]),
-          userOdds: u,
+          home, away, league, country: ctry || country, kickoff: kick || date,
+          h: String(nums[0]), d: String(nums[1]), a: String(nums[2]), userOdds: u,
         });
         continue;
       }
       if (!nums.length) setHeader(flat);
       continue;
+    }
+
+    // ---------- v9.14: space-separated rows (ID date - time teams odds) ----------
+    const sp = flat.match(/^(\d{3,5})\s+(\d{2}-\d{2}-\d{4})\s*-\s*(\d{1,2}:\d{2})\s+(.+)$/);
+    if (sp) {
+      const om = sp[4].match(/^(.*?)\s+((?:\d+\.\d+\s+){2,}\d+\.\d+)$/);
+      if (om) {
+        const od = om[2].split(/\s+/).map(parseFloat);
+        if (od.length >= 3) {
+          const [home, away] = splitTeams(om[1].trim());
+          const u: Record<string, number> = {};
+          if (od.length >= 9) {
+            u.dc1X = od[3]; u.dcX2 = od[4]; u.dc12 = od[5];
+            u.over25 = od[6]; u.under25 = od[7]; u.bttsYes = od[8];
+            if (od.length >= 10) u.bttsNo = od[9];
+          }
+          rows.push({
+            home, away, league, country, kickoff: `${sp[2]} ${sp[3]}`,
+            h: String(od[0]), d: String(od[1]), a: String(od[2]), userOdds: u,
+          });
+          continue;
+        }
+      }
     }
 
     // ---------- generic rows: [time] Home vs Away h d a ----------
