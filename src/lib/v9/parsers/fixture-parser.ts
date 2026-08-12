@@ -1,9 +1,9 @@
 // ============================================================
-// Fixture parser v9.15 — space-row branch now accepts the
-// jackpot PDF copy shape: up to TWO leading IDs, date+time with
-// OR without a dash, and a country token between teams & odds
-// ("1 1587 14-08-2026 19:30 Eintracht Braunschweig VfL Bochum
-//  Germany 2.48 3.30 2.75 …"). Keeps v9.13/v9.14 features.
+// Fixture parser v9.16 — reconstruction pre-pass: vertical
+// pipe cells (one per line, as the jackpot PDF copies) are
+// glued into logical rows; identical consecutive lines and
+// duplicated odds cells are collapsed. Then v9.13-v9.15
+// branches parse the normalized rows (pipe, space, vs, headers).
 // ============================================================
 export interface FixtureRow {
   home: string; away: string; league: string; country: string; kickoff: string;
@@ -15,7 +15,7 @@ const GARBAGE = [
   /home\s+draw\s+away/i, /3 way/i, /double chance/i, /over\/under/i, /both teams/i,
   /^id\b/i, /team 1/i, /team 2/i, /\bdate\b/i, /sportpesa/i, /paybill/i,
   /legal/i, /licence/i, /1 or x/i, /x or 2/i, /\byes\s+no\b/i, /quick pick/i,
-  /only 18\+/i, /gambling may/i, /licensed and regulated/i,
+  /only 18\+/i, /gambling may/i, /licensed and regulated/i, /http/i, /p\.o\.box/i,
 ];
 const isGarbage = (s: string) => GARBAGE.some((r) => r.test(s));
 const clean = (s: string) => s.replace(/\|/g, ' ').replace(/\s+/g, ' ').trim();
@@ -24,7 +24,7 @@ const COUNTRIES = new Set([
   'Germany', 'Russia', 'Sweden', 'Norway', 'France', 'Belgium', 'Netherlands', 'Austria',
   'Spain', 'England', 'Scotland', 'Wales', 'Denmark', 'Finland', 'Iceland', 'Turkey',
   'Serbia', 'Poland', 'Portugal', 'Czechia', 'Kazakhstan', 'USA', 'Brazil', 'Argentina',
-  'South', 'Mozambique', 'Chile', 'Japan', 'Australia', 'Croatia', 'Greece', 'Switzerland',
+  'Mozambique', 'Chile', 'Japan', 'Australia', 'Croatia', 'Greece', 'Switzerland',
   'Romania', 'Hungary', 'Ukraine', 'Ireland', 'Estonia', 'Latvia', 'Lithuania', 'Slovenia',
 ]);
 
@@ -59,20 +59,44 @@ export function parseFixtureList(text: string): FixtureRow[] {
     return [home, away || w[w.length - 1]];
   };
 
-  for (const rawLine of text.split(/\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const flat = clean(line);
+  // ---------- v9.16: rebuild vertical cells into logical lines ----------
+  const rawLines = text.split(/\n/).map(clean).filter(Boolean);
+  const lines: string[] = [];
+  let buf: string[] = [];
+  const hasOdds = (s: string) => /\d\.\d+/.test(s);
+  const hasDate = (s: string) => /\d{2}-\d{2}-\d{4}/.test(s);
+  const isInt = (s: string) => /^\d+$/.test(s);
+  const flush = () => { if (buf.length) { lines.push(buf.join(' ')); buf = []; } };
+
+  for (const L of rawLines) {
+    if (!buf.length) { buf = [L]; continue; }
+    const bt = buf.join(' ');
+    if (hasOdds(bt)) {
+      // record in progress: append odds cells (skip exact duplicates), flush on non-odds
+      if (hasOdds(L)) { if (buf[buf.length - 1] !== L) buf.push(L); }
+      else { flush(); buf = [L]; }
+    } else if (hasDate(bt) || /\d/.test(bt)) {
+      // vertical record fragment (ids/date/teams): append, skip duplicate cells
+      if (buf[buf.length - 1] !== L) buf.push(L);
+    } else {
+      // header-ish buffer: flush when a record token arrives
+      if (isInt(L) || hasDate(L) || hasOdds(L)) { flush(); buf = [L]; }
+      else if (buf[buf.length - 1] !== L) buf.push(L);
+    }
+  }
+  flush();
+
+  // ---------- main parse over normalized lines ----------
+  for (const flat of lines) {
     if (isGarbage(flat)) continue;
     if (/^\d{2}[\/.-]\d{2}[\/.-]\d{2,4}$/.test(flat)) { date = flat; continue; }
 
     const nums = (flat.match(/\d+\.\d+/g) || []).map(parseFloat);
 
-    // ---------- pipe-style SportPesa rows ----------
-    if (line.includes('|')) {
-      const cells = line.split('|').map((c) => c.trim()).filter((c) => c.length);
+    // pipe-style (horizontal) rows
+    if (flat.includes('|')) {
+      const cells = flat.split('|').map((c) => c.trim()).filter((c) => c.length);
       if (cells.length <= 2 && !nums.length) { setHeader(cells[0] ?? ''); continue; }
-
       const teamCells: string[] = [];
       let kick = '';
       for (const c of cells) {
@@ -82,7 +106,6 @@ export function parseFixtureList(text: string): FixtureRow[] {
         } else if (/^\d+$/.test(c)) continue;
         else if (!/\d\.\d+/.test(c)) teamCells.push(c);
       }
-
       if (nums.length >= 3 && teamCells.length >= 2) {
         let home = teamCells[0];
         let away = teamCells[1];
@@ -108,7 +131,7 @@ export function parseFixtureList(text: string): FixtureRow[] {
       continue;
     }
 
-    // ---------- v9.15: space rows (0-2 IDs, date±dash time, optional country) ----------
+    // space rows (0-2 IDs, date±dash time, optional country)
     const sp = flat.match(
       /^(?:(\d{1,5})\s+)?(?:(\d{1,5})\s+)?(\d{2}-\d{2}-\d{4})\s*-?\s*(\d{1,2}:\d{2})\s+(.+)$/,
     );
@@ -140,7 +163,7 @@ export function parseFixtureList(text: string): FixtureRow[] {
       }
     }
 
-    // ---------- generic rows: [time] Home vs Away h d a ----------
+    // generic rows: [time] Home vs Away h d a
     const m = flat.match(
       /^(?:(\d{1,2}:\d{2})\s+)?(.+?)\s+(?:vs\.?|v)\s+(.+?)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)$/i,
     );
@@ -153,7 +176,7 @@ export function parseFixtureList(text: string): FixtureRow[] {
       continue;
     }
 
-    // ---------- header lines ----------
+    // header lines
     if (!nums.length && flat.length < 70) setHeader(flat);
   }
   return rows;
