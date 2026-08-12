@@ -1,0 +1,156 @@
+===ATLAS_FILE: src/lib/v9/parsers/odds-audit.ts===
+// ============================================================
+// Smart Paste Audit v9.11 — mathematical invariants that make
+// mis-mapped pastes IMPOSSIBLE to apply:
+//  • pair implied sums in [98%, 135%]
+//  • over ladder increasing / under ladder decreasing
+//  • double-chance triple sum ≈ 2×(1+margin)
+//  • subset laws: HT-BTTS ⊂ FT-BTTS, HT O1.5 ⊂ FT O1.5,
+//    team O2.5 ⊂ total O2.5, BTTS ⊂ O1.5 (warn)
+// These are the exact failure classes seen in the wild
+// (BTTS @12/@16, away-O2.5 @8.60 captured as main O2.5).
+// ============================================================
+export interface AuditItem { group: string; status: 'ok' | 'warn' | 'fail'; msg: string; }
+
+const imp = (o: number) => (o > 1 ? 1 / o : 0);
+
+export function auditParsedOdds(o: Record<string, number>): AuditItem[] {
+  const items: AuditItem[] = [];
+
+  const pair = (group: string, a: number, b: number, lo = 0.98, hi = 1.35) => {
+    if (!(a > 1) || !(b > 1)) return;
+    const s = imp(a) + imp(b);
+    if (s < lo || s > hi)
+      items.push({ group, status: 'fail', msg: `implied sum ${(s * 100).toFixed(0)}% (sane 98–135%)` });
+  };
+
+  pair('BTTS', o.bttsYes, o.bttsNo);
+  pair('BTTS HT', o.bttsHTYes, o.bttsHTNo);
+  for (const lk of ['05', '15', '25', '35', '45']) pair(`O/U ${lk}`, o[`over${lk}`], o[`under${lk}`]);
+
+  const i1X = imp(o.dc1X), iX2 = imp(o.dcX2), i12 = imp(o.dc12);
+  if (i1X && iX2 && i12) {
+    const s = (i1X + iX2 + i12) / 2;
+    if (s < 1.0 || s > 1.4)
+      items.push({ group: 'Double Chance', status: 'fail', msg: `implied average ${(s * 100).toFixed(0)}% (sane 100–140%)` });
+  }
+
+  const overKeys = ['over05', 'over15', 'over25', 'over35', 'over45'].filter((k) => o[k] > 1);
+  for (let i = 1; i < overKeys.length; i++)
+    if (o[overKeys[i]] <= o[overKeys[i - 1]]) {
+      items.push({ group: 'Over ladder', status: 'fail', msg: 'over odds must increase with the line' });
+      break;
+    }
+  const underKeys = ['under05', 'under15', 'under25', 'under35', 'under45'].filter((k) => o[k] > 1);
+  for (let i = 1; i < underKeys.length; i++)
+    if (o[underKeys[i]] >= o[underKeys[i - 1]]) {
+      items.push({ group: 'Under ladder', status: 'fail', msg: 'under odds must decrease with the line' });
+      break;
+    }
+
+  if (o.bttsHTYes > 1 && o.bttsYes > 1 && imp(o.bttsHTYes) > imp(o.bttsYes) + 0.03)
+    items.push({ group: 'BTTS HT ⊂ BTTS', status: 'fail', msg: 'HT BTTS implied > FT BTTS implied (first-half leak?)' });
+  if (o.htOver15 > 1 && o.over15 > 1 && imp(o.htOver15) > imp(o.over15) + 0.03)
+    items.push({ group: 'HT O1.5 ⊂ FT O1.5', status: 'fail', msg: 'HT over 1.5 implied > FT over 1.5 implied (HT leak?)' });
+  if (o.awayOver25 > 1 && o.over25 > 1 && imp(o.awayOver25) > imp(o.over25) + 0.03)
+    items.push({ group: 'Away O2.5 ⊂ Total O2.5', status: 'fail', msg: 'away over 2.5 implied > total over 2.5 implied (team-goals leak?)' });
+  if (o.homeOver25 > 1 && o.over25 > 1 && imp(o.homeOver25) > imp(o.over25) + 0.03)
+    items.push({ group: 'Home O2.5 ⊂ Total O2.5', status: 'fail', msg: 'home over 2.5 implied > total over 2.5 implied (team-goals leak?)' });
+  if (o.bttsYes > 1 && o.over15 > 1 && imp(o.bttsYes) > imp(o.over15) + 0.05)
+    items.push({ group: 'BTTS ⊂ O1.5', status: 'warn', msg: 'BTTS implied > over 1.5 implied — double-check' });
+
+  if (!items.length) items.push({ group: 'All captured groups', status: 'ok', msg: 'every invariant passed' });
+  return items;
+}
+===ATLAS_FILE: src/components/atlas/SmartPasteOdds.tsx===
+'use client';
+import { useMemo, useState } from 'react';
+import { parseSmartPaste } from '@/lib/v9/parsers/odds-parser';
+import { auditParsedOdds } from '@/lib/v9/parsers/odds-audit';
+import type { PasteProfile } from '@/lib/v9/parsers/odds-parser';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+
+export default function SmartPasteOdds({ matchId, onClose }: { matchId: string; onClose: () => void }) {
+  const [text, setText] = useState('');
+  const [profile, setProfile] = useState<PasteProfile>('auto');
+  const updateOdds = useAtlasStore((s) => s.updateOdds);
+  const updateMatch = useAtlasStore((s) => s.updateMatch);
+
+  const parsed = useMemo(
+    () => parseSmartPaste(text, { profile }),
+    [text, profile],
+  );
+  const audit = useMemo(() => auditParsedOdds(parsed.odds), [parsed]);
+  const fails = audit.filter((a) => a.status === 'fail');
+
+  const apply = () => {
+    Object.entries(parsed.odds).forEach(([k, v]) => updateOdds(matchId, k, v));
+    if (parsed.main) {
+      updateMatch(matchId, { h: String(parsed.main.h), d: String(parsed.main.d), a: String(parsed.main.a) });
+    }
+    onClose();
+  };
+
+  const pill = (p: PasteProfile, label: string) => (
+    <button onClick={() => setProfile(p)}
+      className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold border ${
+        profile === p ? 'bg-blue-500/20 text-blue-300 border-blue-500/40' : 'bg-zinc-800 text-zinc-500 border-zinc-700'}`}>
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-900 p-4" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-zinc-200">Smart Paste Odds (v6 scoped + v9.11 audit)</h3>
+          <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold tabular-nums ${
+            parsed.count > 0 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-800 text-zinc-500'}`}>
+            {parsed.count} markets detected
+          </span>
+        </div>
+
+        <div className="mb-2 flex items-center gap-1.5">
+          <span className="text-[10px] uppercase text-zinc-500">Source:</span>
+          {pill('auto', 'Auto')}
+          {pill('sportpesa', 'SportPesa')}
+          {pill('betika', 'Betika')}
+          {parsed.main && <span className="ml-auto text-[10px] text-emerald-400">3-Way: {parsed.main.h}/{parsed.main.d}/{parsed.main.a}</span>}
+        </div>
+
+        <textarea
+          value={text} onChange={(e) => setText(e.target.value)}
+          placeholder={'Paste the full market page — headers included.\nBOTH TEAMS TO SCORE\nYES (GG) 1.72\nNO (NG) 2.01'}
+          className="h-40 w-full rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-300 focus:border-blue-500 focus:outline-none"
+        />
+
+        {parsed.count > 0 && (
+          <div className="mt-2 space-y-1 rounded-lg border border-zinc-700 bg-zinc-950 p-2">
+            {audit.map((a, i) => (
+              <div key={i} className={`text-[10px] ${
+                a.status === 'fail' ? 'text-rose-400' : a.status === 'warn' ? 'text-amber-400' : 'text-emerald-400'}`}>
+                {a.status === 'fail' ? '✖' : a.status === 'warn' ? '⚠' : '✔'} {a.group}: {a.msg}
+              </div>
+            ))}
+          </div>
+        )}
+        {fails.length > 0 && (
+          <div className="mt-1 text-[10px] font-bold text-rose-400">
+            Apply blocked: impossible mapping detected — fix the paste (wrong section captured).
+          </div>
+        )}
+        {parsed.unmatched.length > 0 && (
+          <div className="mt-1 text-[10px] text-zinc-500">{parsed.unmatched.length} unmatched line(s)</div>
+        )}
+
+        <div className="mt-3 flex justify-end gap-2">
+          <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800">Cancel</button>
+          <button onClick={apply} disabled={(!parsed.count && !parsed.main) || fails.length > 0}
+            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40 hover:bg-blue-500">
+            Parse & Apply {parsed.count} odds
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

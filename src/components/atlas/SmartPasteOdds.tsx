@@ -1,6 +1,7 @@
 'use client';
 import { useMemo, useState } from 'react';
 import { parseSmartPaste } from '@/lib/v9/parsers/odds-parser';
+import { auditParsedOdds } from '@/lib/v9/parsers/odds-audit';
 import type { PasteProfile } from '@/lib/v9/parsers/odds-parser';
 import { useAtlasStore } from '@/lib/v9/store/atlas-store';
 
@@ -14,21 +15,8 @@ export default function SmartPasteOdds({ matchId, onClose }: { matchId: string; 
     () => parseSmartPaste(text, { profile }),
     [text, profile],
   );
-
-  const warnings = useMemo(() => {
-    const w: string[] = [];
-    const imp = (o?: number) => (o && o > 1 ? 1 / o : 0);
-    const o = parsed.odds;
-    if (o.bttsYes && o.bttsNo) {
-      const s = imp(o.bttsYes) + imp(o.bttsNo);
-      if (s < 0.98 || s > 1.3) w.push(`BTTS Yes+No implied ${(s * 100).toFixed(0)}% (sane 100–130%) — check mapping.`);
-    }
-    if (o.over25 && o.under25) {
-      const s = imp(o.over25) + imp(o.under25);
-      if (s < 0.98 || s > 1.3) w.push(`Over+Under 2.5 implied ${(s * 100).toFixed(0)}% — check mapping.`);
-    }
-    return w;
-  }, [parsed]);
+  const audit = useMemo(() => auditParsedOdds(parsed.odds), [parsed]);
+  const fails = audit.filter((a) => a.status === 'fail');
 
   const apply = () => {
     Object.entries(parsed.odds).forEach(([k, v]) => updateOdds(matchId, k, v));
@@ -50,7 +38,7 @@ export default function SmartPasteOdds({ matchId, onClose }: { matchId: string; 
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
       <div className="w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-900 p-4" onClick={(e) => e.stopPropagation()}>
         <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-zinc-200">Smart Paste Odds (v4 section-scoped)</h3>
+          <h3 className="text-sm font-semibold text-zinc-200">Smart Paste Odds (v6 scoped + v9.11 audit)</h3>
           <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold tabular-nums ${
             parsed.count > 0 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-800 text-zinc-500'}`}>
             {parsed.count} markets detected
@@ -71,9 +59,19 @@ export default function SmartPasteOdds({ matchId, onClose }: { matchId: string; 
           className="h-40 w-full rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-300 focus:border-blue-500 focus:outline-none"
         />
 
-        {warnings.length > 0 && (
-          <div className="mt-2 space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2">
-            {warnings.map((w, i) => <div key={i} className="text-[10px] text-amber-400">⚠ {w}</div>)}
+        {parsed.count > 0 && (
+          <div className="mt-2 space-y-1 rounded-lg border border-zinc-700 bg-zinc-950 p-2">
+            {audit.map((a, i) => (
+              <div key={i} className={`text-[10px] ${
+                a.status === 'fail' ? 'text-rose-400' : a.status === 'warn' ? 'text-amber-400' : 'text-emerald-400'}`}>
+                {a.status === 'fail' ? '✖' : a.status === 'warn' ? '⚠' : '✔'} {a.group}: {a.msg}
+              </div>
+            ))}
+          </div>
+        )}
+        {fails.length > 0 && (
+          <div className="mt-1 text-[10px] font-bold text-rose-400">
+            Apply blocked: impossible mapping detected — fix the paste (wrong section captured).
           </div>
         )}
         {parsed.unmatched.length > 0 && (
@@ -82,7 +80,7 @@ export default function SmartPasteOdds({ matchId, onClose }: { matchId: string; 
 
         <div className="mt-3 flex justify-end gap-2">
           <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800">Cancel</button>
-          <button onClick={apply} disabled={!parsed.count && !parsed.main}
+          <button onClick={apply} disabled={(!parsed.count && !parsed.main) || fails.length > 0}
             className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40 hover:bg-blue-500">
             Parse & Apply {parsed.count} odds
           </button>
