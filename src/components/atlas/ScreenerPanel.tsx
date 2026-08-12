@@ -73,9 +73,15 @@ export default function ScreenerPanel() {
   const ticketShape = rows.map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
 
   // v9.9 divergence guard (E0 evidence): EV > 6% only trusted on soft books (margin >= 8%)
-  const stdShape = rows
+     const stdShape = rows
     .filter((r) => r.m.gameType !== 'jackpot')
-    .filter((r) => r.q.maxEV <= 0.06 || r.a.margin >= 0.08)
+    .filter((r) => {
+      const ev = r.q.maxEV;
+      if (ev <= 0) return false;                 // no edge, no bet
+      if (ev <= 0.03) return true;               // earning band — any venue
+      if (ev <= 0.06) return r.a.margin >= 0.06; // mid band — soft-ish only
+      return r.a.margin >= 0.08;                 // big divergence — soft books only
+    })
     .map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
 
   const toggle = (id: string) =>
