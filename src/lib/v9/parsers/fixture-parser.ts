@@ -1,9 +1,9 @@
 // ============================================================
-// Fixture parser v9.17 — v9.16 reconstruction PLUS: a bare
-// row-index line (1..60) arriving after a long junk buffer
-// (page headers: "SportPesa", "JACKPOT KSH…", column titles)
-// flushes that buffer and starts a fresh record, so the FIRST
-// fixture of each page is never glued into the header garbage.
+// Fixture parser v9.18 — v9.17 PLUS: a line carrying a
+// dd-mm-yyyy date while the current buffer has NONE yet means
+// the page-header block ended and a new record starts (the
+// clipboard merges "row ID date" into one line, so the bare
+// row-index rule alone can't catch record 1).
 // ============================================================
 export interface FixtureRow {
   home: string; away: string; league: string; country: string; kickoff: string;
@@ -59,7 +59,7 @@ export function parseFixtureList(text: string): FixtureRow[] {
     return [home, away || w[w.length - 1]];
   };
 
-  // ---------- v9.16/17: rebuild vertical cells into logical lines ----------
+  // ---------- v9.16-18: rebuild vertical cells into logical lines ----------
   const rawLines = text.split(/\n/).map(clean).filter(Boolean);
   const lines: string[] = [];
   let buf: string[] = [];
@@ -75,8 +75,10 @@ export function parseFixtureList(text: string): FixtureRow[] {
       if (hasOdds(L)) { if (buf[buf.length - 1] !== L) buf.push(L); }
       else { flush(); buf = [L]; }
     } else if (hasDate(bt) || /\d/.test(bt)) {
-      // v9.17: bare row-index after a long junk buffer = new record
-      if (/^\d{1,2}$/.test(L) && buf.length > 6) { flush(); buf = [L]; }
+      // v9.17/18: new record when a bare row-index lands after long junk,
+      // OR a dd-mm-yyyy date arrives while the buffer has none yet
+      const newRec = (/^\d{1,2}$/.test(L) && buf.length > 6) || (hasDate(L) && !hasDate(bt));
+      if (newRec) { flush(); buf = [L]; }
       else if (buf[buf.length - 1] !== L) buf.push(L);
     } else {
       if (isInt(L) || hasDate(L) || hasOdds(L)) { flush(); buf = [L]; }
