@@ -6,14 +6,16 @@ import { DC_RHO_STANDARD, EMPTY_USER_ODDS } from '@/lib/v9/atlas-types';
 import type { Match, Outcome } from '@/lib/v9/atlas-types';
 import { fmtPct } from '@/lib/v9/ui/atlas-colors';
 
+interface Bucket { n: number; hits: number; profit: number; }
 interface Report {
   total: number; analyzed: number;
   pickHits: number; pickProfit: number;
   brier: number;
   flags: number; flagHits: number; flagProfit: number;
+  lo: Bucket; mid: Bucket; hi: Bucket;
 }
 
-// v9.9 fix: key suffixes are tenths ("25" = 2.5) — divide by 10
+// key suffixes are tenths ("25" = 2.5)
 function settleKey(key: string, i: number, j: number): boolean | null {
   let m = key.match(/^over(\d+)$/); if (m) return i + j > +m[1] / 10;
   m = key.match(/^under(\d+)$/); if (m) return i + j < +m[1] / 10;
@@ -57,8 +59,9 @@ export default function StandardLabPanel() {
     const iBTH = hs.findIndex((h) => h === 'B365BTH' || /BTH$/.test(h));
     const iBTA = hs.findIndex((h) => h === 'B365BTA' || /BTA$/.test(h));
 
+    const bk = (): Bucket => ({ n: 0, hits: 0, profit: 0 });
     const rep: Report = { total: 0, analyzed: 0, pickHits: 0, pickProfit: 0, brier: 0,
-                          flags: 0, flagHits: 0, flagProfit: 0 };
+                          flags: 0, flagHits: 0, flagProfit: 0, lo: bk(), mid: bk(), hi: bk() };
 
     const rows = lines.slice(1);
     for (let b = 0; b < rows.length; b += 25) {           // Rule 10.3 batching
@@ -103,6 +106,9 @@ export default function StandardLabPanel() {
               rep.flags++;
               rep.flagHits += s ? 1 : 0;
               rep.flagProfit += s ? flag.odds - 1 : -1;
+              const bkt = flag.ev > 0.06 ? rep.hi : flag.ev > 0.03 ? rep.mid : rep.lo;
+              bkt.n++;
+              if (s) { bkt.hits++; bkt.profit += flag.odds - 1; } else bkt.profit -= 1;
             }
           }
         } catch { /* skip malformed */ }
@@ -118,6 +124,16 @@ export default function StandardLabPanel() {
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
       <div className={`text-lg font-bold ${tone}`}>{v}</div>
       <div className="text-[9px] text-zinc-500">{l}</div>
+    </div>
+  );
+  const bCard = (t: string, b: Bucket) => (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
+      <div className="text-[10px] text-zinc-500">{t}</div>
+      <div className="text-sm font-bold tabular-nums text-zinc-200">{b.n ? fmtPct(b.hits / b.n) : '—'}</div>
+      <div className={`text-xs font-bold tabular-nums ${b.profit > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+        {b.profit >= 0 ? '+' : ''}{b.profit.toFixed(1)}u
+      </div>
+      <div className="text-[9px] text-zinc-600">{b.n} bets</div>
     </div>
   );
 
@@ -139,8 +155,8 @@ export default function StandardLabPanel() {
             }} />
         </div>
         <div className="text-[10px] text-zinc-500">
-          {fileName || 'Suggested: E0.csv (England 25/26) from football-data.co.uk — then SP1, D1, I1, F1 for volume.'}
-          {' '}Every +EV flag is settled against the real score at flat 1-unit stakes.
+          {fileName || 'Suggested: E0.csv (England 25/26) — then SP1, D1, I1, F1 for volume.'}
+          {' '}Every +EV flag settled vs the real score at flat 1u; buckets show which EV size earns.
         </div>
       </div>
 
@@ -152,18 +168,24 @@ export default function StandardLabPanel() {
             {card(`${report.analyzed}`, 'matches analyzed')}
             {card(fmtPct(report.analyzed ? report.pickHits / report.analyzed : 0), '1X2 pick hit rate', 'text-blue-400')}
             {card((report.analyzed ? report.brier / report.analyzed : 0).toFixed(3), 'Brier (baseline 0.667)')}
-            {card(`${report.flags}`, 'extended +EV flags raised', 'text-amber-400')}
+            {card(`${report.flags}`, 'extended +EV flags', 'text-amber-400')}
             {card(report.flags ? fmtPct(report.flagHits / report.flags) : '—', 'flag hit rate', 'text-amber-400')}
-            {card(report.flags ? `${report.flagProfit >= 0 ? '+' : ''}${report.flagProfit.toFixed(1)}u` : '—',
+            {card(`${report.flagProfit >= 0 ? '+' : ''}${report.flagProfit.toFixed(1)}u`,
               'flag P/L (flat 1u)', report.flagProfit > 0 ? 'text-emerald-400' : 'text-rose-400')}
           </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            {bCard('EV 0–3% (margin noise?)', report.lo)}
+            {bCard('EV 3–6%', report.mid)}
+            {bCard('EV > 6% (real divergence?)', report.hi)}
+          </div>
+
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-[11px] text-zinc-400">
-            Baseline P/L if you had blindly bet every 1X2 pick:{' '}
+            Baseline blind 1X2 P/L:{' '}
             <b className={report.pickProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
               {report.pickProfit >= 0 ? '+' : ''}{report.pickProfit.toFixed(1)}u
-            </b>
-            {' '}over {report.analyzed} bets. The flag P/L vs this baseline is the Standard engine's real verdict:
-            flags should earn while blind picks lose ~the margin.
+            </b>{' '}over {report.analyzed} bets. The bucket that turns positive is your betting floor:
+            only take SportPesa flags at or above it.
           </div>
         </>
       )}
