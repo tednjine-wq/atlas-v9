@@ -1,5 +1,5 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAtlasStore } from '@/lib/v9/store/atlas-store';
 import { emptyMatch, DC_RHO_STANDARD } from '@/lib/v9/atlas-types';
 import type { Match, AtlasAnalysis } from '@/lib/v9/atlas-types';
@@ -18,9 +18,11 @@ export default function ScreenerPanel() {
   const matches = useAtlasStore((s) => s.matches);
   const phi = useAtlasStore((s) => s.phi);
   const standardParams = useAtlasStore((s) => s.standardParams);
+  const updateMatch = useAtlasStore((s) => s.updateMatch);
   const [text, setText] = useState('');
   const [asJackpot, setAsJackpot] = useState(false);
   const [ticket, setTicket] = useState<string[]>([]);
+  const [pending, setPending] = useState<null | 'jp' | 'std'>(null);
 
   const rows = useMemo<Row[]>(() => matches
     .filter((m) => parseFloat(m.h) > 1 && parseFloat(m.d) > 1 && parseFloat(m.a) > 1)
@@ -52,6 +54,34 @@ export default function ScreenerPanel() {
 
   const parsed = useMemo(() => parseFixtureList(text), [text]);
 
+  const ticketShape = rows.map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
+
+  // v9.9 divergence guard + v9.10 band rule
+  const stdShape = rows
+    .filter((r) => r.m.gameType !== 'jackpot')
+    .filter((r) => {
+      const ev = r.q.maxEV;
+      if (ev <= 0) return false;
+      if (ev <= 0.03) return true;
+      if (ev <= 0.06) return r.a.margin >= 0.06;
+      return r.a.margin >= 0.08;
+    })
+    .map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
+
+  const syncStars = (ids: string[]) => {
+    for (const r of rows) updateMatch(r.m.id, { starred: ids.includes(r.m.id) });
+  };
+  const applyTicket = (ids: string[]) => { setTicket(ids); syncStars(ids); };
+
+  // v9.10: after an import is analyzed, auto-build and star (union with existing)
+  useEffect(() => {
+    if (!pending || !rows.length) return;
+    const built = pending === 'jp' ? buildJackpotTicket(ticketShape) : buildStandardSlate(stdShape);
+    applyTicket(Array.from(new Set([...ticket, ...built])));
+    setPending(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending, rows]);
+
   const importFixtures = () => {
     if (!parsed.length) return;
     useAtlasStore.setState((s) => ({
@@ -67,25 +97,12 @@ export default function ScreenerPanel() {
         }),
       ],
     }));
+    setPending(asJackpot ? 'jp' : 'std');
     setText('');
   };
 
-  const ticketShape = rows.map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
-
-  // v9.9 divergence guard (E0 evidence): EV > 6% only trusted on soft books (margin >= 8%)
-     const stdShape = rows
-    .filter((r) => r.m.gameType !== 'jackpot')
-    .filter((r) => {
-      const ev = r.q.maxEV;
-      if (ev <= 0) return false;                 // no edge, no bet
-      if (ev <= 0.03) return true;               // earning band — any venue
-      if (ev <= 0.06) return r.a.margin >= 0.06; // mid band — soft-ish only
-      return r.a.margin >= 0.08;                 // big divergence — soft books only
-    })
-    .map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
-
   const toggle = (id: string) =>
-    setTicket((t) => (t.includes(id) ? t.filter((x) => x !== id) : [...t, id]));
+    applyTicket(ticket.includes(id) ? ticket.filter((x) => x !== id) : [...ticket, id]);
 
   const ticketRows = rows.filter((r) => ticket.includes(r.m.id));
   const parlayProb = ticketRows.reduce((p, r) => p * r.q.legProb, 1);
@@ -120,20 +137,23 @@ export default function ScreenerPanel() {
             import as Jackpot legs
           </label>
         </div>
+        <div className="mt-1 text-[10px] text-zinc-500">
+          Imports auto-build the ticket and star the legs — the Matches tab opens on ★ Selected.
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <button onClick={() => setTicket(buildJackpotTicket(ticketShape))}
+        <button onClick={() => applyTicket(buildJackpotTicket(ticketShape))}
           className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-500">
           🎰 Auto-Build Jackpot Ticket (8 legs, ≤2 per league)
         </button>
-        <button onClick={() => setTicket(buildStandardSlate(stdShape))}
-          title="Divergence guard: EV > 6% only included on soft books (margin ≥ 8%)"
+        <button onClick={() => applyTicket(buildStandardSlate(stdShape))}
+          title="Band rule: EV 0-3% any venue · 3-6% margin ≥6% · >6% margin ≥8%"
           className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500">
           📊 Auto-Build Standard Slate (EV-guarded)
         </button>
         {ticket.length > 0 && (
-          <button onClick={() => setTicket([])} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800">
+          <button onClick={() => applyTicket([])} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800">
             Clear ticket
           </button>
         )}

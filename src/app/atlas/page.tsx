@@ -17,6 +17,7 @@ const TABS = ['Matches', 'Screener', 'Jackpot Lab', 'Standard Lab', 'Quick View'
 
 export default function AtlasPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]>('Matches');
+  const [matchView, setMatchView] = useState<'selected' | 'all'>('selected');
   const matches = useAtlasStore((s) => s.matches);
   const phi = useAtlasStore((s) => s.phi);
   const setPhi = useAtlasStore((s) => s.setPhi);
@@ -24,6 +25,9 @@ export default function AtlasPage() {
   const exportSession = useAtlasStore((s) => s.exportSession);
   const importSession = useAtlasStore((s) => s.importSession);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const starredMatches = matches.filter((m) => m.starred);
+  const shownMatches = matchView === 'selected' && starredMatches.length ? starredMatches : matches;
 
   const download = () => {
     const blob = new Blob([exportSession()], { type: 'application/json' });
@@ -44,7 +48,7 @@ export default function AtlasPage() {
       <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold tracking-tight">
-            ATLAS <span className="text-blue-400">v9.9</span>
+            ATLAS <span className="text-blue-400">v9.10</span>
             <span className="ml-2 text-xs font-normal text-zinc-500">
               Enhanced · hybrid Bayesian calibration · copula HT/FT · adaptive MC · beta-binomial learning · fixture screener · jackpot lab · standard lab
             </span>
@@ -79,7 +83,17 @@ export default function AtlasPage() {
 
       {tab === 'Matches' && (
         <div className="space-y-4">
-          <div className="flex justify-end">
+          <div className="flex items-center justify-end gap-2">
+            <div className="flex overflow-hidden rounded-lg border border-zinc-800 text-[11px]">
+              <button onClick={() => setMatchView('selected')}
+                className={`px-3 py-1.5 ${matchView === 'selected' ? 'bg-teal-500/15 text-teal-300' : 'bg-zinc-900 text-zinc-500 hover:bg-zinc-800'}`}>
+                ★ Selected ({starredMatches.length})
+              </button>
+              <button onClick={() => setMatchView('all')}
+                className={`px-3 py-1.5 ${matchView === 'all' ? 'bg-zinc-100 text-zinc-950' : 'bg-zinc-900 text-zinc-500 hover:bg-zinc-800'}`}>
+                All ({matches.length})
+              </button>
+            </div>
             {matches.length > 0 && (
               <button onClick={clearAll}
                 className="rounded-lg border border-rose-500/30 px-3 py-1.5 text-[11px] text-rose-400 hover:bg-rose-500/10">
@@ -88,12 +102,14 @@ export default function AtlasPage() {
             )}
           </div>
           <SummaryPanel />
-          {matches.length === 0 && (
+          {shownMatches.length === 0 && (
             <div className="rounded-xl border border-dashed border-zinc-800 p-10 text-center text-sm text-zinc-600">
-              No matches yet. Click “+ Add Match”, use the Screener to import a fixture list, or import API picks.
+              {matchView === 'selected'
+                ? 'No starred matches yet — import a fixture list in the Screener and the auto-built legs will appear here.'
+                : 'No matches yet. Click “+ Add Match”, use the Screener to import a fixture list, or import API picks.'}
             </div>
           )}
-          {matches.map((m) => <MatchCard key={m.id} match={m} />)}
+          {shownMatches.map((m) => <MatchCard key={m.id} match={m} />)}
         </div>
       )}
       {tab === 'Screener' && <ScreenerPanel />}
@@ -106,7 +122,7 @@ export default function AtlasPage() {
       {tab === 'API Picks' && <APIPicksPanel />}
 
       <footer className="mt-8 text-center text-[10px] text-zinc-700">
-        ATLAS v9.9 · 100% client-side computation · Standard ρ=-0.13 / Jackpot ρ=-0.08 · MC is a cross-check, never the primary model
+        ATLAS v9.10 · 100% client-side computation · Standard ρ=-0.13 / Jackpot ρ=-0.08 · MC is a cross-check, never the primary model
       </footer>
     </div>
   );

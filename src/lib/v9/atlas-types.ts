@@ -1,6 +1,6 @@
 // ============================================================
-// ATLAS v9.6 — types. v9.6 adds mmMarkets provenance to
-// CalibrationResult (multi-market lambda blending, §8).
+// ATLAS v9.10 — types. Adds Match.starred (screener selection
+// sync so the Matches tab can show only auto-built legs).
 // All v8.7 conventions preserved (Rules 1-7).
 // ============================================================
 
@@ -42,7 +42,7 @@ export interface HybridCalibration {
 
 export interface CalibrationResult {
   lambdaH: number; lambdaA: number; sse: number; hybrid: HybridCalibration;
-  mmMarkets?: number; // v9.6: how many extended prices joined the calibration
+  mmMarkets?: number;
 }
 
 export type DisagreementLevel = 'none' | 'low' | 'medium' | 'high';
@@ -85,6 +85,7 @@ export interface Match {
   userOdds: Record<string, number>;
   prior?: TeamStrengthPrior;
   context?: MatchContext;
+  starred?: boolean; // v9.10: selected by screener auto-build / manual star
 }
 
 export interface AtlasAnalysis {

@@ -1,0 +1,498 @@
+===ATLAS_FILE: src/lib/v9/atlas-types.ts===
+// ============================================================
+// ATLAS v9.10 — types. Adds Match.starred (screener selection
+// sync so the Matches tab can show only auto-built legs).
+// All v8.7 conventions preserved (Rules 1-7).
+// ============================================================
+
+export type Outcome = 'home' | 'draw' | 'away';
+export type GameType = 'standard' | 'jackpot';
+export type Verdict = 'BET' | 'NO-BET';
+
+export const DC_RHO_STANDARD = -0.13;
+export const DC_RHO_JACKPOT = -0.08;
+export const PARAMS_VERSION = 4;
+export const MIN_RECALIBRATION_RESULTS = 5;
+
+export interface ScoreEntry { s: string; i: number; j: number; p: number; }
+export interface MarginWarning { level: 'none' | 'moderate' | 'high' | 'severe'; msg: string; }
+
+export interface PortfolioOutcome {
+  outcome: Outcome;
+  stake: number; ev: number; sharpe: number; kelly: number;
+  isMaxEp: boolean; varPerUnit: number;
+}
+
+export interface DecorrelationResult {
+  score: number;
+  edges: Record<Outcome, number>;
+  evs: Record<Outcome, number>;
+  spotted: Outcome | null;
+  hasRealSpot: boolean;
+  maxEdge: number;
+}
+
+export interface HybridCalibration {
+  source: 'market-only' | 'hybrid';
+  marketProbs: [number, number, number];
+  priorProbs: [number, number, number] | null;
+  blendedProbs: [number, number, number];
+  marketPrecision: number;
+  priorPrecision: number;
+}
+
+export interface CalibrationResult {
+  lambdaH: number; lambdaA: number; sse: number; hybrid: HybridCalibration;
+  mmMarkets?: number;
+}
+
+export type DisagreementLevel = 'none' | 'low' | 'medium' | 'high';
+export type SimRecommendation = 'none' | 'shrink_confidence' | 'flip_pick' | 'investigate';
+
+export interface SimResult {
+  n: number;
+  probs: Record<Outcome, number>;
+  ci95: Record<Outcome, number>;
+  meanGoals: number; sdGoals: number;
+  scoreFreq: ScoreEntry[];
+  deltas: Record<Outcome, number>;
+  maxDelta: number;
+  disagreement: DisagreementLevel;
+  recommendation: SimRecommendation;
+  confMultiplier: number;
+  convergedAt: number;
+}
+
+export interface HTFTJoint {
+  combos: Record<string, number>;
+  theta: number;
+  method: 'gaussian-copula-mc';
+}
+
+export interface TeamStrengthPrior {
+  pHome: number; pDraw: number; pAway: number;
+  confidence: number;
+}
+
+export interface MatchContext { narrative: string; source: 'ai' | 'rules'; at: number; }
+
+export interface Match {
+  id: string;
+  home: string; away: string;
+  league: string; country: string;
+  kickoff: string;
+  h: string; d: string; a: string;
+  gameType: GameType;
+  userOdds: Record<string, number>;
+  prior?: TeamStrengthPrior;
+  context?: MatchContext;
+  starred?: boolean; // v9.10: selected by screener auto-build / manual star
+}
+
+export interface AtlasAnalysis {
+  pick: Outcome;
+  confidence: number;
+  probs: Record<Outcome, number>;
+  dcProbs: Record<Outcome, number>;
+  bookProbs: Record<Outcome, number>;
+  margin: number;
+  marginWarning: MarginWarning;
+  calibration: CalibrationResult;
+  scoreMatrix: ScoreEntry[];
+  decorrelation: DecorrelationResult;
+  portfolio: PortfolioOutcome[];
+  sofTriggered: boolean;
+  decorrOverride: boolean;
+  thresholdPass: boolean;
+  verdict: Verdict;
+  tightGame: boolean;
+  sim?: SimResult;
+  htft?: HTFTJoint;
+  engine: GameType;
+}
+
+export interface AtlasJackpotAnalysis extends AtlasAnalysis {
+  parlayScore: number;
+  upsetVulnerable: boolean;
+  secondaryPick: Outcome;
+  secondaryProb: number;
+  homeBias: number;
+  skippedDecorrOverride: { wouldFlipTo: Outcome; evLost: number } | null;
+}
+
+const KEYS = [
+  'bttsYes','bttsNo','over05','under05','over15','under15','over25','under25','over35','under35',
+  'exact0','exact1','exact2','exact3','exact4','exact5','exact6plus','oddGoals','evenGoals',
+  'group01','group23','group45','group6p','dc1X','dcX2','dc12',
+  'ah-1','ah-0.75','ah-0.5','ah-0.25','ah0','ah0.25','ah0.5','ah0.75','ah1',
+  'ahht-0.5','ahht-0.25','ahht0',
+  'homeOver05','homeUnder05','homeOver15','homeUnder15','homeOver25','homeUnder25',
+  'awayOver05','awayUnder05','awayOver15','awayUnder15','awayOver25','awayUnder25',
+  'ftsHome','ftsAway','ftsNeither','ht3Home','ht3Draw','ht3Away',
+  'bttsHTYes','bttsHTNo','htOver05','htUnder05','htOver15','htUnder15',
+  'halfMost1st','halfMost2nd','halfMostNeither',
+] as const;
+
+const combo = () => {
+  const o: Record<string, number> = {};
+  for (const k of KEYS) o[k] = 0;
+  for (const cs of ['0_0','1_0','0_1','1_1','2_0','0_2','2_1','1_2','2_2']) o[`cs_${cs}`] = 0;
+  for (const h of ['1','X','2']) for (const f of ['1','X','2']) o[`htft_${h}_${f}`] = 0;
+  for (const l of ['-1:0','-0:1','0:1','1:0','-2:0','0:2','1:1','2:1','1:2','2:0','0:2']) o[`eh_${l}`] = 0;
+  return o;
+};
+
+export const EMPTY_USER_ODDS: Readonly<Record<string, number>> = Object.freeze(combo());
+
+export const emptyMatch = (id: string): Match => ({
+  id, home: '', away: '', league: '', country: '', kickoff: '',
+  h: '', d: '', a: '', gameType: 'standard', userOdds: { ...EMPTY_USER_ODDS },
+});
+===ATLAS_FILE: src/components/atlas/ScreenerPanel.tsx===
+'use client';
+import { useEffect, useMemo, useState } from 'react';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import { emptyMatch, DC_RHO_STANDARD } from '@/lib/v9/atlas-types';
+import type { Match, AtlasAnalysis } from '@/lib/v9/atlas-types';
+import { atlasAnalyseV9 } from '@/lib/v9/engines/standard';
+import { atlasAnalyseJackpotV9 } from '@/lib/v9/engines/jackpot';
+import { computeExtendedMarketsV9 } from '@/lib/v9/markets/extended-markets';
+import { parseFixtureList } from '@/lib/v9/parsers/fixture-parser';
+import { qualityStandard, qualityJackpot, buildJackpotTicket, buildStandardSlate } from '@/lib/v9/analysis/screener';
+import type { FixtureQuality } from '@/lib/v9/analysis/screener';
+import { fmtPct } from '@/lib/v9/ui/atlas-colors';
+
+interface ExtEdge { label: string; ev: number; odds: number; }
+interface Row { m: Match; a: AtlasAnalysis; q: FixtureQuality; ext: ExtEdge | null; }
+
+export default function ScreenerPanel() {
+  const matches = useAtlasStore((s) => s.matches);
+  const phi = useAtlasStore((s) => s.phi);
+  const standardParams = useAtlasStore((s) => s.standardParams);
+  const updateMatch = useAtlasStore((s) => s.updateMatch);
+  const [text, setText] = useState('');
+  const [asJackpot, setAsJackpot] = useState(false);
+  const [ticket, setTicket] = useState<string[]>([]);
+  const [pending, setPending] = useState<null | 'jp' | 'std'>(null);
+
+  const rows = useMemo<Row[]>(() => matches
+    .filter((m) => parseFloat(m.h) > 1 && parseFloat(m.d) > 1 && parseFloat(m.a) > 1)
+    .map((m) => {
+      try {
+        if (m.gameType === 'jackpot') {
+          const a = atlasAnalyseJackpotV9(m, phi);
+          return { m, a, q: qualityJackpot(a), ext: null };
+        }
+        const a = atlasAnalyseV9(m, phi, standardParams);
+        const ext = computeExtendedMarketsV9(
+          a.scoreMatrix, a.calibration.lambdaH, a.calibration.lambdaA,
+          DC_RHO_STANDARD, m.userOdds,
+        );
+        const best = ext.topEvBets.length ? ext.topEvBets[0] : null;
+        const extEdge = best && best.ev > 0 ? { label: best.label, ev: best.ev, odds: best.odds } : null;
+        const base = qualityStandard(a);
+        const q: FixtureQuality = {
+          ...base,
+          score: Math.min(100, base.score + (extEdge ? Math.min(15, Math.round(extEdge.ev * 200)) : 0)),
+          maxEV: Math.max(base.maxEV, extEdge?.ev ?? -1),
+        };
+        return { m, a, q, ext: extEdge };
+      } catch { return null; }
+    })
+    .filter((r): r is Row => r !== null)
+    .sort((x, y) => y.q.score - x.q.score),
+  [matches, phi, standardParams]);
+
+  const parsed = useMemo(() => parseFixtureList(text), [text]);
+
+  const ticketShape = rows.map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
+
+  // v9.9 divergence guard + v9.10 band rule
+  const stdShape = rows
+    .filter((r) => r.m.gameType !== 'jackpot')
+    .filter((r) => {
+      const ev = r.q.maxEV;
+      if (ev <= 0) return false;
+      if (ev <= 0.03) return true;
+      if (ev <= 0.06) return r.a.margin >= 0.06;
+      return r.a.margin >= 0.08;
+    })
+    .map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
+
+  const syncStars = (ids: string[]) => {
+    for (const r of rows) updateMatch(r.m.id, { starred: ids.includes(r.m.id) });
+  };
+  const applyTicket = (ids: string[]) => { setTicket(ids); syncStars(ids); };
+
+  // v9.10: after an import is analyzed, auto-build and star (union with existing)
+  useEffect(() => {
+    if (!pending || !rows.length) return;
+    const built = pending === 'jp' ? buildJackpotTicket(ticketShape) : buildStandardSlate(stdShape);
+    applyTicket(Array.from(new Set([...ticket, ...built])));
+    setPending(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending, rows]);
+
+  const importFixtures = () => {
+    if (!parsed.length) return;
+    useAtlasStore.setState((s) => ({
+      matches: [
+        ...s.matches,
+        ...parsed.map((f) => {
+          const base = emptyMatch(crypto.randomUUID());
+          return {
+            ...base, ...f,
+            userOdds: { ...base.userOdds, ...(f.userOdds ?? {}) },
+            gameType: asJackpot ? ('jackpot' as const) : ('standard' as const),
+          };
+        }),
+      ],
+    }));
+    setPending(asJackpot ? 'jp' : 'std');
+    setText('');
+  };
+
+  const toggle = (id: string) =>
+    applyTicket(ticket.includes(id) ? ticket.filter((x) => x !== id) : [...ticket, id]);
+
+  const ticketRows = rows.filter((r) => ticket.includes(r.m.id));
+  const parlayProb = ticketRows.reduce((p, r) => p * r.q.legProb, 1);
+  const avgEV = ticketRows.length
+    ? ticketRows.reduce((s, r) => s + Math.max(r.q.maxEV, 0), 0) / ticketRows.length : 0;
+
+  const scoreColor = (s: number) =>
+    s >= 70 ? 'text-emerald-400' : s >= 55 ? 'text-yellow-400' : 'text-zinc-500';
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-xs font-bold text-zinc-300">
+            IMPORT FIXTURE LIST (SportPesa PDF → select-all → copy → paste)
+          </h3>
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums ${
+            parsed.length ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-800 text-zinc-500'}`}>
+            {parsed.length} fixtures detected
+          </span>
+        </div>
+        <textarea value={text} onChange={(e) => setText(e.target.value)}
+          placeholder={'Premier League\n14:00 Arsenal vs Chelsea 2.10 3.40 3.60\n16:30 Manchester City vs Atletico Madrid 1.93 3.55 3.05'}
+          className="h-28 w-full rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-300 focus:border-blue-500 focus:outline-none" />
+        <div className="mt-2 flex items-center gap-3">
+          <button onClick={importFixtures} disabled={!parsed.length}
+            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-40">
+            Import {parsed.length} fixtures
+          </button>
+          <label className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+            <input type="checkbox" checked={asJackpot} onChange={(e) => setAsJackpot(e.target.checked)} className="accent-amber-500" />
+            import as Jackpot legs
+          </label>
+        </div>
+        <div className="mt-1 text-[10px] text-zinc-500">
+          Imports auto-build the ticket and star the legs — the Matches tab opens on ★ Selected.
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => applyTicket(buildJackpotTicket(ticketShape))}
+          className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-500">
+          🎰 Auto-Build Jackpot Ticket (8 legs, ≤2 per league)
+        </button>
+        <button onClick={() => applyTicket(buildStandardSlate(stdShape))}
+          title="Band rule: EV 0-3% any venue · 3-6% margin ≥6% · >6% margin ≥8%"
+          className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500">
+          📊 Auto-Build Standard Slate (EV-guarded)
+        </button>
+        {ticket.length > 0 && (
+          <button onClick={() => applyTicket([])} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800">
+            Clear ticket
+          </button>
+        )}
+      </div>
+
+      {ticketRows.length > 0 && (
+        <div className="rounded-xl border border-teal-500/25 bg-zinc-900/60 p-3">
+          <div className="grid grid-cols-3 gap-3 text-center">
+            <div><div className="text-lg font-bold text-zinc-100">{ticketRows.length}</div><div className="text-[10px] text-zinc-500">legs selected</div></div>
+            <div><div className="text-lg font-bold text-amber-300">{fmtPct(parlayProb)}</div><div className="text-[10px] text-zinc-500">combined all-hit probability</div></div>
+            <div><div className={`text-lg font-bold ${avgEV > 0 ? 'text-emerald-400' : 'text-zinc-400'}`}>{avgEV > 0 ? '+' : ''}{fmtPct(avgEV)}</div><div className="text-[10px] text-zinc-500">avg best edge (standard)</div></div>
+          </div>
+        </div>
+      )}
+
+      <div className="overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-900/60">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-[10px] uppercase text-zinc-500">
+              <th className="px-2 py-2">★</th><th className="px-2 py-2">Score</th>
+              <th className="px-2 py-2">Match</th><th className="px-2 py-2">Engine</th>
+              <th className="px-2 py-2">Pick</th><th className="px-2 py-2">Conf</th>
+              <th className="px-2 py-2">Margin</th><th className="px-2 py-2">Max EV</th>
+              <th className="px-2 py-2">Why</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, 80).map(({ m, a, q, ext }) => (
+              <tr key={m.id} className={`border-t border-zinc-800 ${ticket.includes(m.id) ? 'bg-teal-500/5' : ''}`}>
+                <td className="px-2 py-1.5">
+                  <button onClick={() => toggle(m.id)} className={ticket.includes(m.id) ? 'text-teal-400' : 'text-zinc-600 hover:text-zinc-300'}>
+                    {ticket.includes(m.id) ? '★' : '☆'}
+                  </button>
+                </td>
+                <td className={`px-2 py-1.5 font-bold tabular-nums ${scoreColor(q.score)}`}>{q.score}</td>
+                <td className="px-2 py-1.5 text-zinc-300">{m.home} v {m.away}<span className="ml-1 text-[9px] text-zinc-600">{m.league}</span></td>
+                <td className="px-2 py-1.5 text-[10px] text-zinc-500">{m.gameType === 'jackpot' ? 'JP' : 'STD'}</td>
+                <td className="px-2 py-1.5 uppercase text-zinc-300">{a.pick}</td>
+                <td className="px-2 py-1.5 tabular-nums text-zinc-300">{fmtPct(a.confidence)}</td>
+                <td className="px-2 py-1.5 tabular-nums text-zinc-400">{fmtPct(a.margin)}</td>
+                <td className="px-2 py-1.5 tabular-nums">
+                  {ext ? (
+                    <span className={ext.ev > 0.06 && a.margin < 0.08 ? 'text-amber-400' : 'text-emerald-400'}>
+                      +{fmtPct(ext.ev)} {ext.label} @{ext.odds.toFixed(2)}{ext.ev > 0.06 && a.margin < 0.08 ? ' ⚠' : ''}
+                    </span>
+                  ) : q.maxEV > 0 ? (
+                    <span className="text-emerald-400">+{fmtPct(q.maxEV)}</span>
+                  ) : (
+                    <span className="text-zinc-600">—</span>
+                  )}
+                </td>
+                <td className="px-2 py-1.5 text-[9px] text-zinc-500">{q.reasons.join(' · ')}</td>
+              </tr>
+            ))}
+            {!rows.length && <tr><td colSpan={9} className="px-3 py-6 text-center text-zinc-600">No analyzable fixtures yet — paste a fixture list above.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+===ATLAS_FILE: src/app/atlas/page.tsx===
+'use client';
+import { useRef, useState } from 'react';
+import { useAtlasStore } from '@/lib/v9/store/atlas-store';
+import MatchCard from '@/components/atlas/MatchCard';
+import QuickViewTables from '@/components/atlas/QuickViewTables';
+import SummaryPanel from '@/components/atlas/SummaryPanel';
+import SimulationPanel from '@/components/atlas/SimulationPanel';
+import LearningPanel from '@/components/atlas/LearningPanel';
+import CalibrationPanel from '@/components/atlas/CalibrationPanel';
+import APIPicksPanel from '@/components/atlas/APIPicksPanel';
+import ScreenerPanel from '@/components/atlas/ScreenerPanel';
+import JackpotLabPanel from '@/components/atlas/JackpotLabPanel';
+import StandardLabPanel from '@/components/atlas/StandardLabPanel';
+import ScrapeButton from '@/components/atlas/ScrapeButton';
+
+const TABS = ['Matches', 'Screener', 'Jackpot Lab', 'Standard Lab', 'Quick View', 'Simulations', 'Learning', 'Backtest', 'API Picks'] as const;
+
+export default function AtlasPage() {
+  const [tab, setTab] = useState<(typeof TABS)[number]>('Matches');
+  const [matchView, setMatchView] = useState<'selected' | 'all'>('selected');
+  const matches = useAtlasStore((s) => s.matches);
+  const phi = useAtlasStore((s) => s.phi);
+  const setPhi = useAtlasStore((s) => s.setPhi);
+  const addMatch = useAtlasStore((s) => s.addMatch);
+  const exportSession = useAtlasStore((s) => s.exportSession);
+  const importSession = useAtlasStore((s) => s.importSession);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const starredMatches = matches.filter((m) => m.starred);
+  const shownMatches = matchView === 'selected' && starredMatches.length ? starredMatches : matches;
+
+  const download = () => {
+    const blob = new Blob([exportSession()], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `atlas_v9_session_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+  };
+
+  const clearAll = () => {
+    if (window.confirm(`Delete ALL ${matches.length} matches? Results and learning data are kept. This cannot be undone.`)) {
+      useAtlasStore.setState({ matches: [] });
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-zinc-950 p-4 md:p-6 text-zinc-100">
+      <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight">
+            ATLAS <span className="text-blue-400">v9.10</span>
+            <span className="ml-2 text-xs font-normal text-zinc-500">
+              Enhanced · hybrid Bayesian calibration · copula HT/FT · adaptive MC · beta-binomial learning · fixture screener · jackpot lab · standard lab
+            </span>
+          </h1>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs">
+            φ threshold <b className="tabular-nums text-blue-400">{phi.toFixed(2)}</b>
+            <input type="range" min={0} max={0.3} step={0.01} value={phi}
+              onChange={(e) => setPhi(parseFloat(e.target.value))} className="w-24 accent-blue-500" />
+          </label>
+          <button onClick={addMatch} className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold hover:bg-blue-500">+ Add Match</button>
+          <button onClick={download} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">Export</button>
+          <button onClick={() => fileRef.current?.click()} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">Import</button>
+          <input ref={fileRef} type="file" accept=".json" className="hidden" onChange={async (e) => {
+            const f = e.target.files?.[0];
+            if (f) importSession(await f.text());
+          }} />
+        </div>
+      </header>
+
+      <nav className="mb-4 flex flex-wrap items-center gap-1.5">
+        {TABS.map((t) => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+              tab === t ? 'bg-zinc-100 text-zinc-950' : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}>
+            {t}
+          </button>
+        ))}
+        <div className="ml-auto"><ScrapeButton /></div>
+      </nav>
+
+      {tab === 'Matches' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-end gap-2">
+            <div className="flex overflow-hidden rounded-lg border border-zinc-800 text-[11px]">
+              <button onClick={() => setMatchView('selected')}
+                className={`px-3 py-1.5 ${matchView === 'selected' ? 'bg-teal-500/15 text-teal-300' : 'bg-zinc-900 text-zinc-500 hover:bg-zinc-800'}`}>
+                ★ Selected ({starredMatches.length})
+              </button>
+              <button onClick={() => setMatchView('all')}
+                className={`px-3 py-1.5 ${matchView === 'all' ? 'bg-zinc-100 text-zinc-950' : 'bg-zinc-900 text-zinc-500 hover:bg-zinc-800'}`}>
+                All ({matches.length})
+              </button>
+            </div>
+            {matches.length > 0 && (
+              <button onClick={clearAll}
+                className="rounded-lg border border-rose-500/30 px-3 py-1.5 text-[11px] text-rose-400 hover:bg-rose-500/10">
+                🗑 Clear All Matches
+              </button>
+            )}
+          </div>
+          <SummaryPanel />
+          {shownMatches.length === 0 && (
+            <div className="rounded-xl border border-dashed border-zinc-800 p-10 text-center text-sm text-zinc-600">
+              {matchView === 'selected'
+                ? 'No starred matches yet — import a fixture list in the Screener and the auto-built legs will appear here.'
+                : 'No matches yet. Click “+ Add Match”, use the Screener to import a fixture list, or import API picks.'}
+            </div>
+          )}
+          {shownMatches.map((m) => <MatchCard key={m.id} match={m} />)}
+        </div>
+      )}
+      {tab === 'Screener' && <ScreenerPanel />}
+      {tab === 'Jackpot Lab' && <JackpotLabPanel />}
+      {tab === 'Standard Lab' && <StandardLabPanel />}
+      {tab === 'Quick View' && <QuickViewTables />}
+      {tab === 'Simulations' && <SimulationPanel />}
+      {tab === 'Learning' && <LearningPanel />}
+      {tab === 'Backtest' && <CalibrationPanel />}
+      {tab === 'API Picks' && <APIPicksPanel />}
+
+      <footer className="mt-8 text-center text-[10px] text-zinc-700">
+        ATLAS v9.10 · 100% client-side computation · Standard ρ=-0.13 / Jackpot ρ=-0.08 · MC is a cross-check, never the primary model
+      </footer>
+    </div>
+  );
+}
