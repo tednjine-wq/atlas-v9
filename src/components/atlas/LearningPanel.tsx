@@ -53,11 +53,11 @@ export default function LearningPanel() {
   const [slipText, setSlipText] = useState('');
   const sportPesaSlip = useMemo(() => parseSportPesaSlip(slipText), [slipText]);
 
-  // v9.20: SportPesa pipe-table slips first; fallback to free-text parser
+  // v9.22: logged bets carry pick + odds + FT/HT result for learning
   const parsedBets = useMemo(() => {
     if (sportPesaSlip && sportPesaSlip.legs.length) {
       return sportPesaSlip.legs.map((l) => ({
-        teams: `${l.home} v ${l.away}`,
+        teams: `${l.home} v ${l.away}${l.ft ? ` · FT ${l.ft}${l.ht ? ` (HT ${l.ht})` : ''}` : ''}`,
         market: toBetMarket(l.marketKey),
         pick: l.pick,
         odds: l.odds,
