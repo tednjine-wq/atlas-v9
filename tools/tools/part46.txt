@@ -1,0 +1,147 @@
+===ATLAS_FILE: src/lib/v9/parsers/sportpesa-slip.ts===
+// ============================================================
+// SportPesa bet-slip parser v9.21 — v9.20 horizontal regex PLUS
+// a vertical-cell state machine: PDF copies often wrap each
+// table cell onto its own line ("Benfica" / "1.06" /
+// "Total Goals" / "UNDER 2.50 1:1 (0:0) √"). The fallback walks
+// tokens, accumulates game/market fragments, and finalizes a
+// leg when the pick+score+marker line arrives.
+// ============================================================
+export interface SlipLeg {
+  n: number; id: string; kickoff: string;
+  home: string; away: string;
+  odds: number; market: string; pick: string;
+  ft: string; ht: string;
+  won: boolean | null;
+  marketKey: string; marketLabel: string;
+}
+export interface ParsedSlip {
+  betId: string; stake: number; possibleWin: number;
+  status: string; description: string;
+  legs: SlipLeg[];
+}
+
+const ascii = (s: string) => s.replace(/：/g, ':').replace(/（/g, '(').replace(/）/g, ')');
+const SKIP = /Bet (ID|amount|status)|Description|Possible Win|Section|SportPesa|Paybill|Licence|N°|\bGAME\b|\bMARKET\b|\bPICK\b|\bRESULTS\b|\bODDS\b|^\d{6,}$/i;
+
+export function classifySlip(market: string, dir: 'OVER' | 'UNDER', line: number): { key: string; label: string } {
+  const m = market.toLowerCase();
+  const lk = String(line).replace('.', '');
+  const du = dir === 'OVER' ? 'Over' : 'Under';
+  if (/both teams|btts/.test(m)) return { key: dir === 'OVER' ? 'bttsYes' : 'bttsNo', label: `BTTS ${dir === 'OVER' ? 'Yes' : 'No'}` };
+  if (/half/.test(m) && /home\s*team/.test(m)) return { key: `home${du}${lk}HT`, label: `Home ${du} ${line} HT` };
+  if (/home\s*team/.test(m)) return { key: `home${du}${lk}`, label: `Home ${du} ${line} FT` };
+  if (/away\s*team/.test(m)) return { key: `away${du}${lk}`, label: `Away ${du} ${line} FT` };
+  if (/half/.test(m)) return { key: `ht${du}${lk}`, label: `HT ${du} ${line}` };
+  return { key: `${du.toLowerCase()}${lk}`, label: `${du} ${line} FT` };
+}
+
+function extractHeader(raw: string[]): ParsedSlip {
+  const slip: ParsedSlip = { betId: '', stake: 0, possibleWin: 0, status: '', description: '', legs: [] };
+  for (const l of raw) {
+    let m = l.match(/Bet ID:\s*(\d+)/i); if (m) slip.betId = m[1];
+    m = l.match(/Bet amount:\s*KSH\s*([\d.]+)/i); if (m) slip.stake = parseFloat(m[1]);
+    m = l.match(/Possible Win:\s*KSH\s*([\d.]+)/i); if (m) slip.possibleWin = parseFloat(m[1]);
+    m = l.match(/Bet status:\s*(.+)/i); if (m) slip.status = m[1].trim();
+    m = l.match(/Description:\s*(.+)/i); if (m) slip.description = m[1].trim();
+  }
+  return slip;
+}
+
+// ---------- v9.20: horizontal single-line legs ----------
+function parseHorizontal(raw: string[]): SlipLeg[] {
+  const legs: SlipLeg[] = [];
+  const legLines: string[] = [];
+  for (const l of raw) {
+    if (/^\|?\s*\d{1,2}\s*\|\s*\d{3,5}\s*\|\s*\d{2}\/\d{2}\/\d{2}/.test(l)) legLines.push(l);
+    else if (legLines.length && !SKIP.test(l)) legLines[legLines.length - 1] += ' ' + l;
+  }
+  for (const line of legLines) {
+    const flat = line.replace(/\|/g, ' ').replace(/\s+/g, ' ').trim();
+    const m = flat.match(
+      /^(\d{1,2})\s+(\d{3,5})\s+(\d{2}\/\d{2}\/\d{2})\s+(\d{1,2}:\d{2})\s+(.+?)\s+(\d+\.\d+)\s+(.*?)\s*(OVER|UNDER)\s*(\d+(?:\.\d+)?)\s+(\d+:\d+)\s*(?:\((\d+:\d+)\))?\s*([√✓xX✗]?)\s*$/i,
+    );
+    if (!m) continue;
+    const game = m[5].trim();
+    const gi = game.indexOf('-');
+    const dir = m[8].toUpperCase() as 'OVER' | 'UNDER';
+    const lv = parseFloat(m[9]);
+    const cls = classifySlip(m[7], dir, lv);
+    legs.push({
+      n: parseInt(m[1], 10), id: m[2], kickoff: `${m[3]} ${m[4]}`,
+      home: gi > 0 ? game.slice(0, gi).trim() : game,
+      away: gi > 0 ? game.slice(gi + 1).trim() : '',
+      odds: parseFloat(m[6]), market: m[7].trim(), pick: `${dir} ${m[9]}`,
+      ft: m[10], ht: m[11] ?? '',
+      won: m[12] === '√' || m[12] === '✓' ? true : m[12] ? false : null,
+      marketKey: cls.key, marketLabel: cls.label,
+    });
+  }
+  return legs;
+}
+
+// ---------- v9.21: vertical-cell state machine ----------
+function parseVertical(raw: string[]): SlipLeg[] {
+  const legs: SlipLeg[] = [];
+  let cur: Partial<SlipLeg> & { dir?: 'OVER' | 'UNDER'; ln?: number } | null = null;
+  let game = '';
+  let market = '';
+
+  const finalize = () => {
+    if (cur && cur.pick && game) {
+      const g = game.replace(/\s*-+\s*/g, '-').trim();
+      const gi = g.indexOf('-');
+      const dir = cur.dir ?? 'UNDER';
+      const cls = classifySlip(market, dir, cur.ln ?? 0);
+      legs.push({
+        n: cur.n ?? legs.length + 1, id: cur.id ?? '', kickoff: cur.kickoff ?? '',
+        home: gi > 0 ? g.slice(0, gi).trim() : g,
+        away: gi > 0 ? g.slice(gi + 1).trim() : '',
+        odds: cur.odds ?? 1, market: market.trim(), pick: cur.pick ?? '',
+        ft: cur.ft ?? '', ht: cur.ht ?? '', won: cur.won ?? null,
+        marketKey: cls.key, marketLabel: cls.label,
+      });
+    }
+    cur = null; game = ''; market = '';
+  };
+
+  for (const line of raw) {
+    if (SKIP.test(line)) continue;
+    if (/^\d{1,2}$/.test(line)) { if (cur && cur.pick) finalize(); if (!cur) cur = { n: parseInt(line, 10) }; continue; }
+    if (/^\d{3,5}$/.test(line)) { if (!cur) cur = {}; cur.id = line; continue; }
+    if (/^\d{2}\/\d{2}\/\d{2}(\s+\d{1,2}:\d{2})?$/.test(line)) { if (!cur) cur = {}; cur.kickoff = line; continue; }
+    if (/^\d{1,2}:\d{2}$/.test(line)) { if (cur) cur.kickoff = `${cur.kickoff ?? ''} ${line}`.trim(); continue; }
+
+    const pm = line.match(/\b(OVER|UNDER)\s*(\d+(?:\.\d+)?)\b/i);
+    const isTime = /^\d{1,2}:\d{2}$/.test(line);
+    const sm = !isTime ? line.match(/(\d{1,2})\s*:\s*(\d{1,2})(?:\s*\((\d{1,2})\s*:\s*(\d{1,2})\))?/) : null;
+    const mk = line.match(/([√✓✗]|X)\s*$/i);
+
+    if (pm || sm || mk) {
+      if (!cur) cur = {};
+      if (pm) { cur.dir = pm[1].toUpperCase() as 'OVER' | 'UNDER'; cur.ln = parseFloat(pm[2]); cur.pick = `${pm[1].toUpperCase()} ${pm[2]}`; }
+      if (sm && pm) { cur.ft = `${sm[1]}:${sm[2]}`; if (sm[3] !== undefined) cur.ht = `${sm[3]}:${sm[4]}`; }
+      if (mk) cur.won = /√|✓/.test(mk[1]);
+      if (cur.pick && (cur.ft || cur.won !== null)) finalize();
+      continue;
+    }
+    if (/^\d+\.\d+$/.test(line)) { if (!cur) cur = {}; if (!cur.odds) cur.odds = parseFloat(line); continue; }
+    if (/total goals|over\/under|half\s*time|full\s*time|home\s*team|away\s*team|both\s*teams|btts|double\s*chance|asian|match\s*result/i.test(line)) {
+      market += (market ? ' ' : '') + line; continue;
+    }
+    if (/[A-Za-z]{2}/.test(line)) { game += (game ? ' ' : '') + line; continue; }
+  }
+  finalize();
+  return legs;
+}
+
+export function parseSportPesaSlip(text: string): ParsedSlip | null {
+  if (!text || !text.trim()) return null;
+  const raw = text.split(/\n/).map((l) => ascii(l).replace(/\|/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const header = extractHeader(raw);
+  const legs = parseHorizontal(raw);
+  if (legs.length) return { ...header, legs };
+  const v = parseVertical(raw);
+  if (v.length) return { ...header, legs: v };
+  return header.betId ? header : null;
+}
