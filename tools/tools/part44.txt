@@ -1,0 +1,82 @@
+===ATLAS_FILE: src/lib/v9/parsers/sportpesa-slip.ts===
+// ============================================================
+// SportPesa bet-slip parser v9.20 — understands the pipe-table
+// slip: "Bet ID / amount / status" header + leg rows
+// | n | id | dd/mm/yy hh:mm | Home-Away | odds | MARKET | PICK | ft(ht) | √/X |
+// Tolerates wrapped MARKET cells (continuation lines are glued)
+// and full-width colons. Returns structured legs for the
+// Learning panel (Part 45 wiring).
+// ============================================================
+export interface SlipLeg {
+  n: number; id: string; kickoff: string;
+  home: string; away: string;
+  odds: number; market: string; pick: string;
+  ft: string; ht: string;
+  won: boolean | null;
+  marketKey: string; marketLabel: string;
+}
+export interface ParsedSlip {
+  betId: string; stake: number; possibleWin: number;
+  status: string; description: string;
+  legs: SlipLeg[];
+}
+
+const ascii = (s: string) => s.replace(/：/g, ':').replace(/（/g, '(').replace(/）/g, ')');
+
+export function classifySlip(market: string, dir: 'OVER' | 'UNDER', line: number): { key: string; label: string } {
+  const m = market.toLowerCase();
+  const lk = String(line).replace('.', '');
+  const du = dir === 'OVER' ? 'Over' : 'Under';
+  if (/both teams|btts/.test(m)) return { key: dir === 'OVER' ? 'bttsYes' : 'bttsNo', label: `BTTS ${dir === 'OVER' ? 'Yes' : 'No'}` };
+  if (/half/.test(m) && /home\s*team|team\s*-\s*half/.test(m)) return { key: `home${du}${lk}HT`, label: `Home ${du} ${line} HT` };
+  if (/home\s*team/.test(m)) return { key: `home${du}${lk}`, label: `Home ${du} ${line} FT` };
+  if (/away\s*team/.test(m)) return { key: `away${du}${lk}`, label: `Away ${du} ${line} FT` };
+  if (/half/.test(m)) return { key: `ht${du}${lk}`, label: `HT ${du} ${line}` };
+  return { key: `${du.toLowerCase()}${lk}`, label: `${du} ${line} FT` };
+}
+
+export function parseSportPesaSlip(text: string): ParsedSlip | null {
+  const raw = text.split(/\n/).map((l) => ascii(l).trim()).filter(Boolean);
+  const slip: ParsedSlip = { betId: '', stake: 0, possibleWin: 0, status: '', description: '', legs: [] };
+
+  for (const l of raw) {
+    let m = l.match(/Bet ID:\s*(\d+)/i); if (m) slip.betId = m[1];
+    m = l.match(/Bet amount:\s*KSH\s*([\d.]+)/i); if (m) slip.stake = parseFloat(m[1]);
+    m = l.match(/Possible Win:\s*KSH\s*([\d.]+)/i); if (m) slip.possibleWin = parseFloat(m[1]);
+    m = l.match(/Bet status:\s*(.+)/i); if (m) slip.status = m[1].trim();
+    m = l.match(/Description:\s*(.+)/i); if (m) slip.description = m[1].trim();
+  }
+
+  // glue wrapped continuation lines onto their leg row
+  const legLines: string[] = [];
+  for (const l of raw) {
+    if (/^\|?\s*\d{1,2}\s*\|\s*\d{3,5}\s*\|\s*\d{2}\/\d{2}\/\d{2}/.test(l)) legLines.push(l);
+    else if (legLines.length && !/Bet (ID|amount|status)|Description|Possible/i.test(l)) legLines[legLines.length - 1] += ' ' + l;
+  }
+  if (!slip.betId && !legLines.length) return null;
+
+  for (const line of legLines) {
+    const flat = line.replace(/\|/g, ' ').replace(/\s+/g, ' ').trim();
+    const m = flat.match(
+      /^(\d{1,2})\s+(\d{3,5})\s+(\d{2}\/\d{2}\/\d{2})\s+(\d{1,2}:\d{2})\s+(.+?)\s+(\d+\.\d+)\s+(.*?)\s*(OVER|UNDER)\s*(\d+(?:\.\d+)?)\s+(\d+:\d+)\s*(?:\((\d+:\d+)\))?\s*([√✓xX✗]?)\s*$/i,
+    );
+    if (!m) continue;
+    const game = m[5].trim();
+    const gi = game.indexOf('-');
+    const home = gi > 0 ? game.slice(0, gi).trim() : game;
+    const away = gi > 0 ? game.slice(gi + 1).trim() : '';
+    const dir = m[8].toUpperCase() as 'OVER' | 'UNDER';
+    const lineVal = parseFloat(m[9]);
+    const cls = classifySlip(m[7], dir, lineVal);
+    const mk = m[12];
+    slip.legs.push({
+      n: parseInt(m[1], 10), id: m[2], kickoff: `${m[3]} ${m[4]}`,
+      home, away, odds: parseFloat(m[6]),
+      market: m[7].trim(), pick: `${dir} ${m[9]}`,
+      ft: m[10], ht: m[11] ?? '',
+      won: mk === '√' || mk === '✓' ? true : mk ? false : null,
+      marketKey: cls.key, marketLabel: cls.label,
+    });
+  }
+  return slip.legs.length || slip.betId ? slip : null;
+}
