@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { useAtlasStore } from '@/lib/v9/store/atlas-store';
 import { parseBetSlip, computeMarketStats, MANUAL_MARKET_OPTIONS } from '@/lib/v9/parsers/bet-slip-parser';
 import type { BetMarket } from '@/lib/v9/parsers/bet-slip-parser';
+import { parseSportPesaSlip } from '@/lib/v9/parsers/sportpesa-slip';
 import type { LearnedParams } from '@/lib/v9/learning/bayesian-learning';
 import { fmtPct } from '@/lib/v9/ui/atlas-colors';
 
@@ -33,6 +34,13 @@ function ParamsCard({ title, params, color, onRecalibrate }: {
   );
 }
 
+const toBetMarket = (key: string): BetMarket => {
+  if (/^(over|under)(15|25|35)$/.test(key)) return key as BetMarket;
+  if (key === 'bttsYes') return 'btts_yes' as BetMarket;
+  if (key === 'bttsNo') return 'btts_no' as BetMarket;
+  return 'other' as BetMarket;
+};
+
 export default function LearningPanel() {
   const predictions = useAtlasStore((s) => s.predictions);
   const standardParams = useAtlasStore((s) => s.standardParams);
@@ -43,7 +51,22 @@ export default function LearningPanel() {
   const feedback = useAtlasStore((s) => s.feedback);
 
   const [slipText, setSlipText] = useState('');
-  const parsedBets = useMemo(() => parseBetSlip(slipText), [slipText]);
+  const sportPesaSlip = useMemo(() => parseSportPesaSlip(slipText), [slipText]);
+
+  // v9.20: SportPesa pipe-table slips first; fallback to free-text parser
+  const parsedBets = useMemo(() => {
+    if (sportPesaSlip && sportPesaSlip.legs.length) {
+      return sportPesaSlip.legs.map((l) => ({
+        teams: `${l.home} v ${l.away}`,
+        market: toBetMarket(l.marketKey),
+        pick: l.pick,
+        odds: l.odds,
+        result: l.won === true ? 'won' : l.won === false ? 'lost' : 'pending',
+      })) as ReturnType<typeof parseBetSlip>;
+    }
+    return parseBetSlip(slipText);
+  }, [sportPesaSlip, slipText]);
+
   const marketStats = useMemo(() => computeMarketStats(parsedBets), [parsedBets]);
 
   const [form, setForm] = useState<{
@@ -69,14 +92,19 @@ export default function LearningPanel() {
 
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
         <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-xs font-bold text-zinc-300">BET SLIP IMPORT (23 market types)</h3>
+          <h3 className="text-xs font-bold text-zinc-300">BET SLIP IMPORT (23 market types + SportPesa slip table)</h3>
           <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums ${parsedBets.length ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-800 text-zinc-500'}`}>
             {parsedBets.length} bets detected
           </span>
         </div>
         <textarea value={slipText} onChange={(e) => setSlipText(e.target.value)}
-          placeholder={'Paste bet history…\nArsenal vs Chelsea\nPick: Over 2.5 (1.85) ✅'}
+          placeholder={'Paste bet history or a SportPesa slip…\nArsenal vs Chelsea\nPick: Over 2.5 (1.85) ✅'}
           className="h-24 w-full rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-300 focus:border-blue-500 focus:outline-none" />
+        {sportPesaSlip && sportPesaSlip.legs.length > 0 && (
+          <div className="mt-1 text-[10px] text-teal-400">
+            🎫 Bet {sportPesaSlip.betId || '—'} · stake {sportPesaSlip.stake || 0} · possible win {sportPesaSlip.possibleWin || 0} · {sportPesaSlip.status || '—'} · {sportPesaSlip.description || '—'}
+          </div>
+        )}
         {parsedBets.length > 0 && (
           <>
             <button
