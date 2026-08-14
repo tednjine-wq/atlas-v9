@@ -99,12 +99,10 @@ export default function LearningPanel() {
         <div className="mb-2 flex items-center justify-between gap-2">
           <h3 className="text-xs font-bold text-zinc-300">BET SLIP IMPORT (23 market types + SportPesa slip table)</h3>
           <div className="flex items-center gap-2">
-            {slipText && (
-              <button onClick={() => setSlipText('')}
-                className="rounded-lg border border-zinc-700 px-2 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800">
-                🗑 Clear
-              </button>
-            )}
+            <button onClick={() => setSlipText('')} disabled={!slipText}
+              className="rounded-lg border border-zinc-700 px-2 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">
+              🗑 Clear
+            </button>
             <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums ${parsedBets.length ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-800 text-zinc-500'}`}>
               {parsedBets.length} bets detected
             </span>
