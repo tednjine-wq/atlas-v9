@@ -96,11 +96,19 @@ export default function LearningPanel() {
       </div>
 
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
-        <div className="mb-2 flex items-center justify-between">
+        <div className="mb-2 flex items-center justify-between gap-2">
           <h3 className="text-xs font-bold text-zinc-300">BET SLIP IMPORT (23 market types + SportPesa slip table)</h3>
-          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums ${parsedBets.length ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-800 text-zinc-500'}`}>
-            {parsedBets.length} bets detected
-          </span>
+          <div className="flex items-center gap-2">
+            {slipText && (
+              <button onClick={() => setSlipText('')}
+                className="rounded-lg border border-zinc-700 px-2 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800">
+                🗑 Clear
+              </button>
+            )}
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums ${parsedBets.length ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-800 text-zinc-500'}`}>
+              {parsedBets.length} bets detected
+            </span>
+          </div>
         </div>
         <textarea value={slipText} onChange={(e) => setSlipText(e.target.value)}
           placeholder={'Paste bet history or a SportPesa slip…\nArsenal vs Chelsea\nPick: Over 2.5 (1.85) ✅'}
