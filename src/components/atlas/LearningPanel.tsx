@@ -38,6 +38,11 @@ const toBetMarket = (key: string): BetMarket => {
   if (/^(over|under)(15|25|35)$/.test(key)) return key as BetMarket;
   if (key === 'bttsYes') return 'btts_yes' as BetMarket;
   if (key === 'bttsNo') return 'btts_no' as BetMarket;
+  if (/^dc/.test(key)) return 'double_chance' as BetMarket;
+  if (/^(eh|ah)/.test(key)) return 'asian_handicap' as BetMarket;
+  if (/^ht/.test(key)) return 'half_time_result' as BetMarket;
+  if (/^home/.test(key)) return 'home_over25' as BetMarket;
+  if (/^away/.test(key)) return 'away_over25' as BetMarket;
   return 'other' as BetMarket;
 };
 
