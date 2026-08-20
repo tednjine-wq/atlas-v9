@@ -1,9 +1,10 @@
 // ============================================================
-// Context Agent v1 (semi-auto) — Gemini + Google Search
+// Context Agent v1.1 (semi-auto) — Gemini + Google Search
 // grounding fetches REAL-TIME team context: motivation,
 // key absences, form, fatigue, weather, derby flag.
-// Human reviews every result; the engine math is NEVER
-// mutated by the agent (KB Rule 5 spirit: model stays primary).
+// v1.1: MODEL FALLBACK CHAIN — Google retires/renames models;
+// the agent now tries stable aliases until one returns 200.
+// Human reviews every result; the engine math is NEVER mutated.
 // ============================================================
 export interface TeamContext {
   motivation: 'high' | 'medium' | 'low';
@@ -15,10 +16,16 @@ export interface TeamContext {
 export interface MatchContext {
   home: TeamContext; away: TeamContext;
   weather: string; derby: boolean;
-  summary: string; confidence: number; fetchedAt: string;
+  summary: string; confidence: number; fetchedAt: string; model: string;
 }
 
-const MODEL = 'gemini-2.5-flash';
+const MODELS = [
+  'gemini-2.5-flash',
+  'gemini-flash-latest',
+  'gemini-2.0-flash',
+  'gemini-2.5-pro',
+  'gemini-pro-latest',
+];
 
 export async function fetchMatchContext(
   home: string, away: string, league: string, kickoff: string, apiKey: string,
@@ -31,24 +38,34 @@ Use fresh web evidence (last 14 days only). Return STRICT JSON, no prose:
 "away":{"motivation":"high|medium|low","reason":"max 18 words","formLast5":"e.g. W-W-D-L-W","keyAbsences":["player (reason)"],"fatigue":"none|medium|high"},
 "weather":"max 8 words","derby":true|false,
 "summary":"max 40 words, betting-relevant synthesis","confidence":0.0-1.0}`;
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        tools: [{ google_search: {} }],
-        generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
-      }),
-    },
-  );
-  if (!res.ok) throw new Error(`Gemini API ${res.status} — check key / quota / model name`);
-  const json = await res.json();
-  const text: string = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error('Model returned no JSON');
-  return { ...(JSON.parse(m[0]) as MatchContext), fetchedAt: new Date().toLocaleString() };
+
+  let lastErr = '';
+  for (const model of MODELS) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          tools: [{ google_search: {} }],
+          generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
+        }),
+      },
+    );
+    if (res.status === 404) { lastErr = `404 on ${model}`; continue; }
+    if (!res.ok) throw new Error(`Gemini API ${res.status} on ${model} — check key / quota`);
+    const json = await res.json();
+    const text: string = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error(`${model} returned no JSON`);
+    return {
+      ...(JSON.parse(m[0]) as Omit<MatchContext, 'fetchedAt' | 'model'>),
+      fetchedAt: new Date().toLocaleString(),
+      model,
+    };
+  }
+  throw new Error(`All model names 404 (${lastErr}) — verify the key at aistudio.google.com/apikey`);
 }
 
 export function contextVerdict(ctx: MatchContext): string {
