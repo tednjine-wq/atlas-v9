@@ -11,9 +11,10 @@ import APIPicksPanel from '@/components/atlas/APIPicksPanel';
 import ScreenerPanel from '@/components/atlas/ScreenerPanel';
 import JackpotLabPanel from '@/components/atlas/JackpotLabPanel';
 import StandardLabPanel from '@/components/atlas/StandardLabPanel';
+import ContextLabPanel from '@/components/atlas/ContextLabPanel';
 import ScrapeButton from '@/components/atlas/ScrapeButton';
 
-const TABS = ['Matches', 'Screener', 'Jackpot Lab', 'Standard Lab', 'Quick View', 'Simulations', 'Learning', 'Backtest', 'API Picks'] as const;
+const TABS = ['Matches', 'Screener', 'Jackpot Lab', 'Standard Lab', 'Context Lab', 'Quick View', 'Simulations', 'Learning', 'Backtest', 'API Picks'] as const;
 
 export default function AtlasPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]>('Matches');
@@ -92,7 +93,7 @@ export default function AtlasPage() {
               <button onClick={() => setMatchView('all')}
                 className={`px-3 py-1.5 ${matchView === 'all' ? 'bg-zinc-100 text-zinc-950' : 'bg-zinc-900 text-zinc-500 hover:bg-zinc-800'}`}>
                 All ({matches.length})
-              </button>
+            </button>
             </div>
             {matches.length > 0 && (
               <button onClick={clearAll}
@@ -106,7 +107,7 @@ export default function AtlasPage() {
             <div className="rounded-xl border border-dashed border-zinc-800 p-10 text-center text-sm text-zinc-600">
               {matchView === 'selected'
                 ? 'No starred matches yet — import a fixture list in the Screener and the auto-built legs will appear here.'
-                : 'No matches yet. Click “+ Add Match”, use the Screener to import a fixture list, or import API picks.'}
+                : 'No matches yet. Click "+ Add Match", use the Screener to import a fixture list, or import API picks.'}
             </div>
           )}
           {shownMatches.map((m) => <MatchCard key={m.id} match={m} />)}
@@ -115,6 +116,7 @@ export default function AtlasPage() {
       {tab === 'Screener' && <ScreenerPanel />}
       {tab === 'Jackpot Lab' && <JackpotLabPanel />}
       {tab === 'Standard Lab' && <StandardLabPanel />}
+      {tab === 'Context Lab' && <ContextLabPanel />}
       {tab === 'Quick View' && <QuickViewTables />}
       {tab === 'Simulations' && <SimulationPanel />}
       {tab === 'Learning' && <LearningPanel />}
