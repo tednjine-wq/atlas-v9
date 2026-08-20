@@ -1,10 +1,10 @@
 // ============================================================
-// Context Agent v1.1 (semi-auto) — Gemini + Google Search
-// grounding fetches REAL-TIME team context: motivation,
-// key absences, form, fatigue, weather, derby flag.
-// v1.1: MODEL FALLBACK CHAIN — Google retires/renames models;
-// the agent now tries stable aliases until one returns 200.
-// Human reviews every result; the engine math is NEVER mutated.
+// Context Agent v1.2 (semi-auto) — Gemini + Google Search
+// grounding fetches REAL-TIME team context.
+// v1.2: BOTH 404 (retired name) AND 429 (per-model quota)
+// continue the chain — every model has its own free bucket;
+// lite models added (most generous free limits).
+// Human reviews every result; engine math NEVER mutated.
 // ============================================================
 export interface TeamContext {
   motivation: 'high' | 'medium' | 'low';
@@ -20,10 +20,11 @@ export interface MatchContext {
 }
 
 const MODELS = [
-  'gemini-2.5-flash',
   'gemini-flash-latest',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
   'gemini-2.0-flash',
-  'gemini-2.5-pro',
+  'gemini-2.0-flash-lite',
   'gemini-pro-latest',
 ];
 
@@ -53,8 +54,8 @@ Use fresh web evidence (last 14 days only). Return STRICT JSON, no prose:
         }),
       },
     );
-    if (res.status === 404) { lastErr = `404 on ${model}`; continue; }
-    if (!res.ok) throw new Error(`Gemini API ${res.status} on ${model} — check key / quota`);
+    if (res.status === 404 || res.status === 429) { lastErr = `${res.status} on ${model}`; continue; }
+    if (!res.ok) throw new Error(`Gemini API ${res.status} on ${model} — check key`);
     const json = await res.json();
     const text: string = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
     const m = text.match(/\{[\s\S]*\}/);
@@ -65,7 +66,7 @@ Use fresh web evidence (last 14 days only). Return STRICT JSON, no prose:
       model,
     };
   }
-  throw new Error(`All model names 404 (${lastErr}) — verify the key at aistudio.google.com/apikey`);
+  throw new Error(`All models unavailable (${lastErr}) — free quota is per-model and resets daily; wait ~60s and retry, or check usage at aistudio.google.com`);
 }
 
 export function contextVerdict(ctx: MatchContext): string {
