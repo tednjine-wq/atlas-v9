@@ -1,5 +1,5 @@
 'use client';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAtlasStore } from '@/lib/v9/store/atlas-store';
 import MatchCard from '@/components/atlas/MatchCard';
 import QuickViewTables from '@/components/atlas/QuickViewTables';
@@ -26,6 +26,16 @@ export default function AtlasPage() {
   const exportSession = useAtlasStore((s) => s.exportSession);
   const importSession = useAtlasStore((s) => s.importSession);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // v9.5: panels can request a tab switch (e.g. Screener → Matches)
+  useEffect(() => {
+    const h = (e: Event) => {
+      const t = (e as CustomEvent<string>).detail;
+      if ((TABS as readonly string[]).includes(t)) setTab(t as (typeof TABS)[number]);
+    };
+    window.addEventListener('atlas:tab', h);
+    return () => window.removeEventListener('atlas:tab', h);
+  }, []);
 
   const starredMatches = matches.filter((m) => m.starred);
   const shownMatches = matchView === 'selected' && starredMatches.length ? starredMatches : matches;
@@ -93,7 +103,7 @@ export default function AtlasPage() {
               <button onClick={() => setMatchView('all')}
                 className={`px-3 py-1.5 ${matchView === 'all' ? 'bg-zinc-100 text-zinc-950' : 'bg-zinc-900 text-zinc-500 hover:bg-zinc-800'}`}>
                 All ({matches.length})
-            </button>
+              </button>
             </div>
             {matches.length > 0 && (
               <button onClick={clearAll}

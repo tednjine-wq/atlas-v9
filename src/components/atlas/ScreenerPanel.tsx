@@ -23,6 +23,7 @@ export default function ScreenerPanel() {
   const [asJackpot, setAsJackpot] = useState(false);
   const [ticket, setTicket] = useState<string[]>([]);
   const [pending, setPending] = useState<null | 'jp' | 'std'>(null);
+  const [sentMsg, setSentMsg] = useState('');
 
   const rows = useMemo<Row[]>(() => matches
     .filter((m) => parseFloat(m.h) > 1 && parseFloat(m.d) > 1 && parseFloat(m.a) > 1)
@@ -104,6 +105,14 @@ export default function ScreenerPanel() {
   const toggle = (id: string) =>
     applyTicket(ticket.includes(id) ? ticket.filter((x) => x !== id) : [...ticket, id]);
 
+  // v9.5: explicit human curation → Matches tab
+  const sendToMatches = () => {
+    if (!ticket.length) return;
+    syncStars(ticket);
+    setSentMsg(`➡ ${ticket.length} selected match${ticket.length > 1 ? 'es' : ''} sent to Matches (★ Selected)`);
+    window.dispatchEvent(new CustomEvent('atlas:tab', { detail: 'Matches' }));
+  };
+
   const ticketRows = rows.filter((r) => ticket.includes(r.m.id));
   const parlayProb = ticketRows.reduce((p, r) => p * r.q.legProb, 1);
   const avgEV = ticketRows.length
@@ -138,11 +147,11 @@ export default function ScreenerPanel() {
           </label>
         </div>
         <div className="mt-1 text-[10px] text-zinc-500">
-          Imports auto-build the ticket and star the legs — the Matches tab opens on ★ Selected.
+          Imports auto-build the ticket and star the legs — then curate: click rows to select, ➕ Send to push your picks to Matches.
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button onClick={() => applyTicket(buildJackpotTicket(ticketShape))}
           className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-500">
           🎰 Auto-Build Jackpot Ticket (8 legs, ≤2 per league)
@@ -152,11 +161,16 @@ export default function ScreenerPanel() {
           className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500">
           📊 Auto-Build Standard Slate (EV-guarded)
         </button>
+        <button onClick={sendToMatches} disabled={!ticket.length}
+          className="rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-500 disabled:opacity-40">
+          ➕ Send {ticket.length || ''} selected to Matches
+        </button>
         {ticket.length > 0 && (
           <button onClick={() => applyTicket([])} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800">
             Clear ticket
           </button>
         )}
+        {sentMsg && <span className="text-[10px] text-teal-400">{sentMsg}</span>}
       </div>
 
       {ticketRows.length > 0 && (
@@ -182,9 +196,11 @@ export default function ScreenerPanel() {
           </thead>
           <tbody>
             {rows.slice(0, 80).map(({ m, a, q, ext }) => (
-              <tr key={m.id} className={`border-t border-zinc-800 ${ticket.includes(m.id) ? 'bg-teal-500/5' : ''}`}>
+              <tr key={m.id} onClick={() => toggle(m.id)}
+                className={`cursor-pointer border-t border-zinc-800 hover:bg-zinc-800/30 ${ticket.includes(m.id) ? 'bg-teal-500/5' : ''}`}>
                 <td className="px-2 py-1.5">
-                  <button onClick={() => toggle(m.id)} className={ticket.includes(m.id) ? 'text-teal-400' : 'text-zinc-600 hover:text-zinc-300'}>
+                  <button onClick={(e) => { e.stopPropagation(); toggle(m.id); }}
+                    className={ticket.includes(m.id) ? 'text-teal-400' : 'text-zinc-600 hover:text-zinc-300'}>
                     {ticket.includes(m.id) ? '★' : '☆'}
                   </button>
                 </td>
