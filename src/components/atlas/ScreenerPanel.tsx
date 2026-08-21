@@ -7,6 +7,7 @@ import { atlasAnalyseV9 } from '@/lib/v9/engines/standard';
 import { atlasAnalyseJackpotV9 } from '@/lib/v9/engines/jackpot';
 import { computeExtendedMarketsV9 } from '@/lib/v9/markets/extended-markets';
 import { parseFixtureList } from '@/lib/v9/parsers/fixture-parser';
+import { parseBetikaList } from '@/lib/v9/parsers/betika-parser';
 import { qualityStandard, qualityJackpot, buildJackpotTicket, buildStandardSlate } from '@/lib/v9/analysis/screener';
 import type { FixtureQuality } from '@/lib/v9/analysis/screener';
 import { fmtPct } from '@/lib/v9/ui/atlas-colors';
@@ -54,7 +55,10 @@ export default function ScreenerPanel() {
     .sort((x, y) => y.q.score - x.q.score),
   [matches, phi, standardParams]);
 
-  const parsed = useMemo(() => parseFixtureList(text), [text]);
+  const parsed = useMemo(() => {
+    const p = parseFixtureList(text);
+    return p.length ? p : (parseBetikaList(text) as typeof p);
+  }, [text]);
 
   const ticketShape = rows.map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
 
