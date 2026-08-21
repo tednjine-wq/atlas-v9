@@ -71,6 +71,7 @@ export default function LearningPanel() {
 
   const [slipText, setSlipText] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [closingInput, setClosingInput] = useState<Record<string, string>>({});
   const sportPesaSlip = useMemo(() => parseSportPesaSlip(slipText), [slipText]);
 
   const parsedBets = useMemo(() => {
@@ -88,7 +89,6 @@ export default function LearningPanel() {
 
   const marketStats = useMemo(() => computeMarketStats(parsedBets), [parsedBets]);
 
-  // v9.4: unresolved predictions resolve even after matches are cleared
   const resolvable = useMemo(() => {
     return predictions
       .filter((p) => !p.result)
@@ -119,11 +119,15 @@ export default function LearningPanel() {
 
   const totalMarketResolved = marketRanking.reduce((s, m) => s + m.n - 2, 0);
 
-  // v9.4 fallback: link an unlinked history row to an orphan prediction by label
   const orphanFor = (label: string) => {
     const core = norm(label.split('·')[0]);
     return predictions.find((p) =>
       !p.result && norm(predLabel(p, predictionLabels[p.matchId] ?? '')) === core);
+  };
+
+  const closingFor = (id: string) => {
+    const c = parseFloat(closingInput[id] ?? '');
+    return c > 1 ? c : undefined;
   };
 
   return (
@@ -298,11 +302,15 @@ export default function LearningPanel() {
                       {linkId ? (
                         <>
                           <span className="text-[9px] text-zinc-500">LOG 1X2:</span>
+                          <input value={closingInput[f.id] ?? ''}
+                            onChange={(e) => setClosingInput((c) => ({ ...c, [f.id]: e.target.value }))}
+                            placeholder="closing (opt)"
+                            className="w-20 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-[10px] text-zinc-300 focus:border-teal-500 focus:outline-none" />
                           {ft && (
                             <button
                               onClick={() => {
                                 const x = parseInt(ft[1], 10), y = parseInt(ft[2], 10);
-                                submitResult(linkId, x > y ? 'home' : x === y ? 'draw' : 'away');
+                                submitResult(linkId, x > y ? 'home' : x === y ? 'draw' : 'away', closingFor(f.id));
                                 setExpandedId(null);
                               }}
                               className="rounded bg-teal-600 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-teal-500">
@@ -310,7 +318,7 @@ export default function LearningPanel() {
                             </button>
                           )}
                           {(['home', 'draw', 'away'] as Outcome[]).map((o) => (
-                            <button key={o} onClick={() => { submitResult(linkId, o); setExpandedId(null); }}
+                            <button key={o} onClick={() => { submitResult(linkId, o, closingFor(f.id)); setExpandedId(null); }}
                               className="rounded border border-zinc-700 px-2 py-0.5 text-[10px] font-bold text-zinc-300 hover:bg-zinc-700">
                               {o === 'home' ? 'H' : o === 'draw' ? 'D' : 'A'}
                             </button>

@@ -1,7 +1,7 @@
 // ============================================================
-// ATLAS v9.4 store — v9.4: every PredictionRecord carries its
-// own "home v away" label at analysis time, so 1X2 resolution
-// survives match clears forever (orphan-safe learning loop).
+// ATLAS v9.5 store — v9.5: submitResult accepts an optional
+// closing-odds override so CLV can be captured even when the
+// match is no longer in the store (cleared cards).
 // RULES 4/6/7/10.3 preserved.
 // ============================================================
 'use client';
@@ -63,7 +63,7 @@ interface AtlasState {
   updateOdds: (id: string, key: string, value: number) => void;
   setPhi: (v: number) => void;
   recordPrediction: (match: Match, a: AtlasAnalysis) => void;
-  submitResult: (id: string, outcome: Outcome) => void;
+  submitResult: (id: string, outcome: Outcome, closingOverride?: number) => void;
   forceRecalibrate: (gameType: GameType) => void;
   clearLearningData: () => void;
   runAllSims: () => Promise<void>;
@@ -113,7 +113,6 @@ export const useAtlasStore = create<AtlasState>()(
       })),
       setPhi: (v) => set({ phi: v }),
 
-      // v9.4: prediction carries its own label (orphan-safe)
       recordPrediction: (match, a) => {
         const h = parseFloat(match.h), d = parseFloat(match.d), aw = parseFloat(match.a);
         const entryOdds = h > 1 && d > 1 && aw > 1 ? { home: h, draw: d, away: aw } : undefined;
@@ -131,7 +130,8 @@ export const useAtlasStore = create<AtlasState>()(
         }));
       },
 
-      submitResult: (id, outcome) => {
+      // v9.5: closingOverride lets the user supply the kickoff price
+      submitResult: (id, outcome, closingOverride) => {
         set((s) => ({
           results: { ...s.results, [id]: outcome },
           predictions: s.predictions.map((p) =>
@@ -140,13 +140,16 @@ export const useAtlasStore = create<AtlasState>()(
         const s1 = get();
         const match = s1.matches.find((m) => m.id === id);
         const pred = s1.predictions.find((p) => p.matchId === id);
-        if (match && pred && pred.entryOdds) {
-          const closingMap: Record<Outcome, number> = {
-            home: parseFloat(match.h), draw: parseFloat(match.d), away: parseFloat(match.a),
-          };
-          const closing = closingMap[pred.pick];
+        if (pred && pred.entryOdds) {
           const entry = pred.entryOdds[pred.pick];
-          if (closing > 1 && entry > 1) {
+          let closing = NaN;
+          if (closingOverride && closingOverride > 1) closing = closingOverride;
+          else if (match) {
+            closing = pred.pick === 'home' ? parseFloat(match.h)
+              : pred.pick === 'draw' ? parseFloat(match.d)
+              : parseFloat(match.a);
+          }
+          if (entry > 1 && closing > 1) {
             const clv = entry / closing - 1;
             set((st) => ({
               predictions: st.predictions.map((p) =>
