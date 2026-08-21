@@ -5,6 +5,7 @@ import { parseBetSlip, computeMarketStats, MANUAL_MARKET_OPTIONS } from '@/lib/v
 import type { BetMarket } from '@/lib/v9/parsers/bet-slip-parser';
 import { parseSportPesaSlip } from '@/lib/v9/parsers/sportpesa-slip';
 import type { LearnedParams } from '@/lib/v9/learning/bayesian-learning';
+import type { Outcome } from '@/lib/v9/atlas-types';
 import { fmtPct } from '@/lib/v9/ui/atlas-colors';
 
 function ParamsCard({ title, params, color, onRecalibrate }: {
@@ -53,6 +54,8 @@ const marketLabel = (market: string, pick: string) => {
 
 export default function LearningPanel() {
   const predictions = useAtlasStore((s) => s.predictions);
+  const matches = useAtlasStore((s) => s.matches);
+  const submitResult = useAtlasStore((s) => s.submitResult);
   const standardParams = useAtlasStore((s) => s.standardParams);
   const jackpotParams = useAtlasStore((s) => s.jackpotParams);
   const forceRecalibrate = useAtlasStore((s) => s.forceRecalibrate);
@@ -79,12 +82,21 @@ export default function LearningPanel() {
 
   const marketStats = useMemo(() => computeMarketStats(parsedBets), [parsedBets]);
 
+  // v9.3: unresolved predictions whose match still exists → one-tap resolve
+  const resolvable = useMemo(() => {
+    return predictions
+      .filter((p) => !p.result)
+      .map((p) => ({ p, m: matches.find((x) => x.id === p.matchId) }))
+      .filter((x) => x.m)
+      .slice(-10)
+      .reverse();
+  }, [predictions, matches]);
+
   const [form, setForm] = useState<{
     matchLabel: string; market: BetMarket; pick: string; odds: string;
     closing: string; result: 'won' | 'lost' | 'pending';
   }>({ matchLabel: '', market: '1x2', pick: 'Home', odds: '1.85', closing: '', result: 'pending' });
 
-  // v9.2: sorted market posteriors (most evidence first)
   const marketRanking = useMemo(() => {
     return Object.entries(marketPosteriors)
       .map(([key, p]) => {
@@ -97,7 +109,7 @@ export default function LearningPanel() {
       .sort((a, b) => b.n - a.n);
   }, [marketPosteriors]);
 
-  const totalMarketResolved = marketRanking.reduce((s, m) => s + m.n - 2, 0); // subtract prior
+  const totalMarketResolved = marketRanking.reduce((s, m) => s + m.n - 2, 0);
 
   return (
     <div className="space-y-4">
@@ -114,6 +126,30 @@ export default function LearningPanel() {
           Reset All Learning Data
         </button>
       </div>
+
+      {resolvable.length > 0 && (
+        <div className="rounded-xl border border-blue-500/25 bg-zinc-900/60 p-3">
+          <h3 className="mb-2 text-xs font-bold text-blue-300">RESOLVE 1X2 PREDICTIONS (feeds the main engine)</h3>
+          <div className="space-y-1">
+            {resolvable.map(({ p, m }) => (
+              <div key={p.id} className="flex items-center justify-between rounded bg-zinc-950/60 px-2 py-1 text-[11px]">
+                <span className="text-zinc-300">
+                  {m!.home} v {m!.away} · <span className="text-zinc-500">engine: {p.pick}</span>
+                </span>
+                <span className="flex gap-1">
+                  {(['home', 'draw', 'away'] as Outcome[]).map((o) => (
+                    <button key={o} onClick={() => submitResult(m!.id, o)}
+                      className="rounded border border-zinc-700 px-2 py-0.5 text-[10px] font-bold text-zinc-300 hover:bg-zinc-700">
+                      {o === 'home' ? 'H' : o === 'draw' ? 'D' : 'A'}
+                    </button>
+                  ))}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-1 text-[10px] text-zinc-500">Tap the ACTUAL result after full-time — CLV is captured automatically from the current odds.</div>
+        </div>
+      )}
 
       {marketRanking.length > 0 && (
         <div className="rounded-xl border border-teal-500/25 bg-zinc-900/60 p-3">
