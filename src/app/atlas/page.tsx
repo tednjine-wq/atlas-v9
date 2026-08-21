@@ -13,6 +13,7 @@ import JackpotLabPanel from '@/components/atlas/JackpotLabPanel';
 import StandardLabPanel from '@/components/atlas/StandardLabPanel';
 import ContextLabPanel from '@/components/atlas/ContextLabPanel';
 import DashboardPanel from '@/components/atlas/DashboardPanel';
+import ContextBadge from '@/components/atlas/ContextBadge';
 import ScrapeButton from '@/components/atlas/ScrapeButton';
 
 const TABS = ['Matches', 'Dashboard', 'Screener', 'Jackpot Lab', 'Standard Lab', 'Context Lab', 'Quick View', 'Simulations', 'Learning', 'Backtest', 'API Picks'] as const;
@@ -121,7 +122,12 @@ export default function AtlasPage() {
                 : 'No matches yet. Click "+ Add Match", use the Screener to import a fixture list, or import API picks.'}
             </div>
           )}
-          {shownMatches.map((m) => <MatchCard key={m.id} match={m} />)}
+          {shownMatches.map((m) => (
+            <div key={m.id} className="space-y-1">
+              <ContextBadge match={m} />
+              <MatchCard match={m} />
+            </div>
+          ))}
         </div>
       )}
       {tab === 'Dashboard' && <DashboardPanel />}
