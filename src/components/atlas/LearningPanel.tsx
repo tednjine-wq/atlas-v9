@@ -46,6 +46,11 @@ const toBetMarket = (key: string): BetMarket => {
   return 'other' as BetMarket;
 };
 
+const marketLabel = (market: string, pick: string) => {
+  const m = market.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  return `${m} · ${pick}`;
+};
+
 export default function LearningPanel() {
   const predictions = useAtlasStore((s) => s.predictions);
   const standardParams = useAtlasStore((s) => s.standardParams);
@@ -54,11 +59,11 @@ export default function LearningPanel() {
   const clearLearningData = useAtlasStore((s) => s.clearLearningData);
   const addFeedback = useAtlasStore((s) => s.addFeedback);
   const feedback = useAtlasStore((s) => s.feedback);
+  const marketPosteriors = useAtlasStore((s) => s.marketPosteriors);
 
   const [slipText, setSlipText] = useState('');
   const sportPesaSlip = useMemo(() => parseSportPesaSlip(slipText), [slipText]);
 
-  // v9.22: logged bets carry pick + odds + FT/HT result for learning
   const parsedBets = useMemo(() => {
     if (sportPesaSlip && sportPesaSlip.legs.length) {
       return sportPesaSlip.legs.map((l) => ({
@@ -79,6 +84,21 @@ export default function LearningPanel() {
     closing: string; result: 'won' | 'lost' | 'pending';
   }>({ matchLabel: '', market: '1x2', pick: 'Home', odds: '1.85', closing: '', result: 'pending' });
 
+  // v9.2: sorted market posteriors (most evidence first)
+  const marketRanking = useMemo(() => {
+    return Object.entries(marketPosteriors)
+      .map(([key, p]) => {
+        const [market, pick] = key.split(':');
+        const n = p.alpha + p.beta;
+        const mean = p.alpha / n;
+        const se = Math.sqrt((mean * (1 - mean)) / n);
+        return { key, market, pick, alpha: p.alpha, beta: p.beta, n, mean, se };
+      })
+      .sort((a, b) => b.n - a.n);
+  }, [marketPosteriors]);
+
+  const totalMarketResolved = marketRanking.reduce((s, m) => s + m.n - 2, 0); // subtract prior
+
   return (
     <div className="space-y-4">
       <div className="grid gap-3 md:grid-cols-2">
@@ -88,12 +108,38 @@ export default function LearningPanel() {
 
       <div className="flex items-center justify-between">
         <div className="text-xs text-zinc-400">
-          {predictions.length} predictions · {predictions.filter((p) => p.result).length} resolved · auto-recalibration every 5 resolved (never below 5)
+          {predictions.length} predictions · {predictions.filter((p) => p.result).length} resolved · {totalMarketResolved} market outcomes · auto-recalibration every 5 resolved (never below 5)
         </div>
         <button onClick={clearLearningData} className="rounded-lg border border-rose-500/30 px-3 py-1.5 text-[11px] text-rose-400 hover:bg-rose-500/10">
           Reset All Learning Data
         </button>
       </div>
+
+      {marketRanking.length > 0 && (
+        <div className="rounded-xl border border-teal-500/25 bg-zinc-900/60 p-3">
+          <h3 className="mb-2 text-xs font-bold text-teal-300">MARKET CONFIDENCE (β-binomial posteriors per market+pick)</h3>
+          <div className="grid gap-1.5 md:grid-cols-2 lg:grid-cols-3">
+            {marketRanking.slice(0, 12).map((m) => {
+              const confColor = m.mean >= 0.58 ? 'text-emerald-400' : m.mean >= 0.50 ? 'text-amber-400' : 'text-rose-400';
+              const ciW = (1.96 * m.se * 100).toFixed(1);
+              return (
+                <div key={m.key} className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-zinc-200">{marketLabel(m.market, m.pick)}</span>
+                    <span className={`text-[10px] font-bold tabular-nums ${confColor}`}>{(m.mean * 100).toFixed(1)}%</span>
+                  </div>
+                  <div className="mt-0.5 flex gap-2 text-[9px] text-zinc-500 tabular-nums">
+                    <span>{m.n - 2} resolved</span>
+                    <span>α {m.alpha.toFixed(1)}</span>
+                    <span>β {m.beta.toFixed(1)}</span>
+                    <span>±{ciW}%</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
         <div className="mb-2 flex items-center justify-between gap-2">
