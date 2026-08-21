@@ -1,7 +1,7 @@
 // ============================================================
-// ATLAS v9.2 store — v9.2 adds per-market beta-binomial
-// posteriors so slip imports (addFeedback) now drive granular
-// market learning, not just hit-rate chips.
+// ATLAS v9.3 store — v9.3 links feedback entries to their
+// prediction at import time (predictionLabels map + team-name
+// match) so BET HISTORY rows can log 1X2 results directly.
 // RULES 4/6/7/10.3 preserved.
 // ============================================================
 'use client';
@@ -24,6 +24,7 @@ export interface FeedbackEntry {
   market: string; pick: string; odds: number;
   closingOdds?: number;
   result: 'won' | 'lost' | 'pending';
+  matchId?: string; // v9.3: link to prediction for 1X2 logging
 }
 export interface ApiPick {
   id: string; home: string; away: string; league: string; kickoff: string;
@@ -37,6 +38,8 @@ export interface RecalLogEntry { at: number; gameType: GameType; message: string
 
 export interface MarketPosterior { alpha: number; beta: number; }
 export type MarketPosteriors = Record<string, MarketPosterior>;
+
+const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 interface AtlasState {
   matches: Match[];
@@ -52,6 +55,7 @@ interface AtlasState {
   apiPicks: ApiPick[]; apiPicksLoading: boolean; apiPicksError: string | null;
   simsRunning: boolean;
   marketPosteriors: MarketPosteriors;
+  predictionLabels: Record<string, string>;
 
   addMatch: () => void;
   removeMatch: (id: string) => void;
@@ -96,6 +100,7 @@ export const useAtlasStore = create<AtlasState>()(
       apiPicks: [], apiPicksLoading: false, apiPicksError: null,
       simsRunning: false,
       marketPosteriors: {},
+      predictionLabels: {},
 
       addMatch: () => set((s) => ({ matches: [...s.matches, emptyMatch(crypto.randomUUID())] })),
       removeMatch: (id) => set((s) => ({ matches: s.matches.filter((m) => m.id !== id) })),
@@ -112,6 +117,7 @@ export const useAtlasStore = create<AtlasState>()(
         const h = parseFloat(match.h), d = parseFloat(match.d), aw = parseFloat(match.a);
         const entryOdds = h > 1 && d > 1 && aw > 1 ? { home: h, draw: d, away: aw } : undefined;
         set((s) => ({
+          predictionLabels: { ...s.predictionLabels, [match.id]: `${match.home} v ${match.away}` },
           predictions: [
             ...s.predictions.filter((p) => p.matchId !== match.id),
             {
@@ -221,9 +227,17 @@ export const useAtlasStore = create<AtlasState>()(
         set((s) => ({ matches: [...s.matches, ...newMatches], apiPicks: [] }));
       },
 
-      // v9.2: slip imports now ALSO update per-market beta-binomial posteriors
+      // v9.3: link feedback → prediction via team-name match
       addFeedback: (e) => set((s) => {
-        const newFeedback = [...s.feedback, { ...e, id: crypto.randomUUID(), ts: Date.now() }];
+        const labelCore = norm(e.matchLabel.split('·')[0]);
+        let linkId: string | undefined;
+        const live = s.matches.find((m) => norm(`${m.home} v ${m.away}`) === labelCore);
+        if (live) linkId = live.id;
+        else {
+          const hit = Object.entries(s.predictionLabels).find(([, lbl]) => norm(lbl) === labelCore);
+          if (hit) linkId = hit[0];
+        }
+        const newFeedback = [...s.feedback, { ...e, matchId: linkId, id: crypto.randomUUID(), ts: Date.now() }];
         const newPosteriors = { ...s.marketPosteriors };
         if (e.result === 'won' || e.result === 'lost') {
           const key = `${e.market}:${e.pick}`;
@@ -242,6 +256,7 @@ export const useAtlasStore = create<AtlasState>()(
         standardParams: get().standardParams, jackpotParams: get().jackpotParams,
         recalibrationLog: get().recalibrationLog,
         marketPosteriors: get().marketPosteriors,
+        predictionLabels: get().predictionLabels,
       }, null, 2),
 
       importSession: (json) => {
@@ -256,6 +271,7 @@ export const useAtlasStore = create<AtlasState>()(
             standardParams: sp, jackpotParams: jp,
             recalibrationLog: data.recalibrationLog ?? [],
             marketPosteriors: data.marketPosteriors ?? {},
+            predictionLabels: data.predictionLabels ?? {},
           });
           return true;
         } catch { return false; }
@@ -268,12 +284,13 @@ export const useAtlasStore = create<AtlasState>()(
         matches: s.matches, results: s.results, feedback: s.feedback, phi: s.phi,
         predictions: s.predictions, standardParams: s.standardParams,
         jackpotParams: s.jackpotParams, recalibrationLog: s.recalibrationLog,
-        marketPosteriors: s.marketPosteriors,
+        marketPosteriors: s.marketPosteriors, predictionLabels: s.predictionLabels,
       }),
       onRehydrateStorage: () => (state) => {
         if (state && state.standardParams.version !== PARAMS_VERSION) state.standardParams = defaultParams();
         if (state && state.jackpotParams.version !== PARAMS_VERSION) state.jackpotParams = defaultParams();
         if (state && !state.marketPosteriors) state.marketPosteriors = {};
+        if (state && !state.predictionLabels) state.predictionLabels = {};
       },
     },
   ),

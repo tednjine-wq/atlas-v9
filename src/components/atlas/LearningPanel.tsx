@@ -55,6 +55,7 @@ const marketLabel = (market: string, pick: string) => {
 export default function LearningPanel() {
   const predictions = useAtlasStore((s) => s.predictions);
   const matches = useAtlasStore((s) => s.matches);
+  const results = useAtlasStore((s) => s.results);
   const submitResult = useAtlasStore((s) => s.submitResult);
   const standardParams = useAtlasStore((s) => s.standardParams);
   const jackpotParams = useAtlasStore((s) => s.jackpotParams);
@@ -65,6 +66,7 @@ export default function LearningPanel() {
   const marketPosteriors = useAtlasStore((s) => s.marketPosteriors);
 
   const [slipText, setSlipText] = useState('');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const sportPesaSlip = useMemo(() => parseSportPesaSlip(slipText), [slipText]);
 
   const parsedBets = useMemo(() => {
@@ -82,7 +84,6 @@ export default function LearningPanel() {
 
   const marketStats = useMemo(() => computeMarketStats(parsedBets), [parsedBets]);
 
-  // v9.3: unresolved predictions whose match still exists → one-tap resolve
   const resolvable = useMemo(() => {
     return predictions
       .filter((p) => !p.result)
@@ -147,7 +148,6 @@ export default function LearningPanel() {
               </div>
             ))}
           </div>
-          <div className="mt-1 text-[10px] text-zinc-500">Tap the ACTUAL result after full-time — CLV is captured automatically from the current odds.</div>
         </div>
       )}
 
@@ -257,22 +257,58 @@ export default function LearningPanel() {
 
       {feedback.length > 0 && (
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
-          <h3 className="mb-2 text-xs font-bold text-zinc-300">BET HISTORY ({feedback.length})</h3>
+          <h3 className="mb-2 text-xs font-bold text-zinc-300">BET HISTORY ({feedback.length}) — click a row to log its 1X2 result</h3>
           <div className="max-h-60 space-y-1 overflow-y-auto">
-            {[...feedback].reverse().slice(0, 50).map((f) => (
-              <div key={f.id} className="flex items-center justify-between rounded bg-zinc-950/60 px-2 py-1 text-[11px]">
-                <span className="text-zinc-300">{f.matchLabel} · {f.market} · {f.pick}</span>
-                <span className="tabular-nums">
-                  <span className="text-zinc-400">@{f.odds.toFixed(2)}</span>
-                  {f.closingOdds && f.closingOdds > 1 && (
-                    <span className={f.odds / f.closingOdds - 1 > 0 ? 'text-teal-400' : 'text-zinc-500'}>
-                      {' '}→ {f.closingOdds.toFixed(2)} ({((f.odds / f.closingOdds - 1) * 100).toFixed(1)}%)
+            {[...feedback].reverse().slice(0, 50).map((f) => {
+              const ft = f.matchLabel.match(/FT\s*(\d+)\s*:\s*(\d+)/i);
+              const logged = f.matchId ? results[f.matchId] : undefined;
+              return (
+                <div key={f.id} className="rounded bg-zinc-950/60 px-2 py-1 text-[11px]">
+                  <button onClick={() => setExpandedId(expandedId === f.id ? null : f.id)}
+                    className="flex w-full items-center justify-between text-left">
+                    <span className="text-zinc-300">{f.matchLabel} · {f.market} · {f.pick}</span>
+                    <span className="tabular-nums">
+                      <span className="text-zinc-400">@{f.odds.toFixed(2)}</span>
+                      {f.closingOdds && f.closingOdds > 1 && (
+                        <span className={f.odds / f.closingOdds - 1 > 0 ? 'text-teal-400' : 'text-zinc-500'}>
+                          {' '}→ {f.closingOdds.toFixed(2)} ({((f.odds / f.closingOdds - 1) * 100).toFixed(1)}%)
+                        </span>
+                      )}{' '}
+                      <span className={f.result === 'won' ? 'text-emerald-400' : f.result === 'lost' ? 'text-rose-400' : 'text-zinc-500'}>{f.result}</span>
                     </span>
-                  )}{' '}
-                  <span className={f.result === 'won' ? 'text-emerald-400' : f.result === 'lost' ? 'text-rose-400' : 'text-zinc-500'}>{f.result}</span>
-                </span>
-              </div>
-            ))}
+                  </button>
+                  {expandedId === f.id && (
+                    <div className="mt-1 flex flex-wrap items-center gap-1 border-t border-zinc-800 pt-1">
+                      {f.matchId ? (
+                        <>
+                          <span className="text-[9px] text-zinc-500">LOG 1X2:</span>
+                          {ft && (
+                            <button
+                              onClick={() => {
+                                const x = parseInt(ft[1], 10), y = parseInt(ft[2], 10);
+                                submitResult(f.matchId!, x > y ? 'home' : x === y ? 'draw' : 'away');
+                                setExpandedId(null);
+                              }}
+                              className="rounded bg-teal-600 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-teal-500">
+                              ⚡ From FT {ft[1]}:{ft[2]}
+                            </button>
+                          )}
+                          {(['home', 'draw', 'away'] as Outcome[]).map((o) => (
+                            <button key={o} onClick={() => { submitResult(f.matchId!, o); setExpandedId(null); }}
+                              className="rounded border border-zinc-700 px-2 py-0.5 text-[10px] font-bold text-zinc-300 hover:bg-zinc-700">
+                              {o === 'home' ? 'H' : o === 'draw' ? 'D' : 'A'}
+                            </button>
+                          ))}
+                          {logged && <span className="text-[9px] text-emerald-400">logged: {logged}</span>}
+                        </>
+                      ) : (
+                        <span className="text-[9px] text-zinc-600">No linked prediction for this row (match wasn't analyzed in ATLAS).</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
