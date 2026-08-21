@@ -12,9 +12,10 @@ import ScreenerPanel from '@/components/atlas/ScreenerPanel';
 import JackpotLabPanel from '@/components/atlas/JackpotLabPanel';
 import StandardLabPanel from '@/components/atlas/StandardLabPanel';
 import ContextLabPanel from '@/components/atlas/ContextLabPanel';
+import DashboardPanel from '@/components/atlas/DashboardPanel';
 import ScrapeButton from '@/components/atlas/ScrapeButton';
 
-const TABS = ['Matches', 'Screener', 'Jackpot Lab', 'Standard Lab', 'Context Lab', 'Quick View', 'Simulations', 'Learning', 'Backtest', 'API Picks'] as const;
+const TABS = ['Matches', 'Dashboard', 'Screener', 'Jackpot Lab', 'Standard Lab', 'Context Lab', 'Quick View', 'Simulations', 'Learning', 'Backtest', 'API Picks'] as const;
 
 export default function AtlasPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]>('Matches');
@@ -123,6 +124,7 @@ export default function AtlasPage() {
           {shownMatches.map((m) => <MatchCard key={m.id} match={m} />)}
         </div>
       )}
+      {tab === 'Dashboard' && <DashboardPanel />}
       {tab === 'Screener' && <ScreenerPanel />}
       {tab === 'Jackpot Lab' && <JackpotLabPanel />}
       {tab === 'Standard Lab' && <StandardLabPanel />}
