@@ -1,10 +1,11 @@
 'use client';
 import { useState } from 'react';
 import { useAtlasStore } from '@/lib/v9/store/atlas-store';
-import { fetchMatchContext, contextVerdict } from '@/lib/v9/agents/context-agent';
+import { fetchMatchContextAuto, contextVerdict } from '@/lib/v9/agents/context-agent';
 import type { MatchContext } from '@/lib/v9/agents/context-agent';
 
-const KEY = 'atlas_context_key';
+const GKEY = 'atlas_context_key';
+const OKEY = 'atlas_openrouter_key';
 const motColor = (m: string) =>
   m === 'high' ? 'text-emerald-400' : m === 'low' ? 'text-rose-400' : 'text-amber-400';
 
@@ -30,7 +31,9 @@ function TeamBlock({ label, t }: { label: string; t: MatchContext['home'] }) {
 export default function ContextLabPanel() {
   const matches = useAtlasStore((s) => s.matches);
   const [apiKey, setApiKey] = useState(() =>
-    typeof window !== 'undefined' ? localStorage.getItem(KEY) ?? '' : '');
+    typeof window !== 'undefined' ? localStorage.getItem(GKEY) ?? '' : '');
+  const [orKey, setOrKey] = useState(() =>
+    typeof window !== 'undefined' ? localStorage.getItem(OKEY) ?? '' : '');
   const [matchId, setMatchId] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -42,10 +45,12 @@ export default function ContextLabPanel() {
 
   const run = async () => {
     if (!target) { setErr('Add a match first (Matches tab).'); return; }
-    if (!apiKey.trim()) { setErr('Paste your Google AI Studio API key first.'); return; }
+    if (!apiKey.trim() && !orKey.trim()) { setErr('Paste a Gemini or OpenRouter key first.'); return; }
     setBusy(true); setErr(''); setCtx(null);
     try {
-      const c = await fetchMatchContext(target.home, target.away, target.league, target.kickoff, apiKey.trim());
+      const c = await fetchMatchContextAuto(target.home, target.away, target.league, target.kickoff, {
+        gemini: apiKey, openrouter: orKey,
+      });
       const v = contextVerdict(c);
       setCtx(c); setVerdict(v);
       setHistory((h) => [{ label: `${target.home} v ${target.away}`, verdict: v }, ...h].slice(0, 12));
@@ -57,13 +62,19 @@ export default function ContextLabPanel() {
   return (
     <div className="space-y-3">
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
-        <h3 className="mb-2 text-xs font-bold text-zinc-300">CONTEXT LAB (semi-auto · Gemini + Google Search · you decide)</h3>
+        <h3 className="mb-2 text-xs font-bold text-zinc-300">CONTEXT LAB (semi-auto · Gemini → OpenRouter fallback · you decide)</h3>
         <div className="flex flex-wrap gap-2">
           <input
             type="password" value={apiKey}
-            onChange={(e) => { setApiKey(e.target.value); localStorage.setItem(KEY, e.target.value); }}
-            placeholder="Google AI Studio API key (aistudio.google.com/apikey)"
-            className="w-72 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-300 focus:border-teal-500 focus:outline-none"
+            onChange={(e) => { setApiKey(e.target.value); localStorage.setItem(GKEY, e.target.value); }}
+            placeholder="Gemini key (optional)"
+            className="w-56 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-300 focus:border-teal-500 focus:outline-none"
+          />
+          <input
+            type="password" value={orKey}
+            onChange={(e) => { setOrKey(e.target.value); localStorage.setItem(OKEY, e.target.value); }}
+            placeholder="OpenRouter key sk-or-… (openrouter.ai → Keys)"
+            className="w-64 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-300 focus:border-teal-500 focus:outline-none"
           />
           <select value={target?.id ?? ''} onChange={(e) => setMatchId(e.target.value)}
             className="max-w-64 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-300">
@@ -91,6 +102,7 @@ export default function ContextLabPanel() {
             <span>weather: {ctx.weather || '—'}</span>
             <span>derby: {ctx.derby ? 'yes' : 'no'}</span>
             <span>source confidence: {(ctx.confidence * 100).toFixed(0)}%</span>
+            <span>via {ctx.model}</span>
             <span>fetched {ctx.fetchedAt}</span>
           </div>
           <div className="mt-2 text-[10px] text-amber-400">

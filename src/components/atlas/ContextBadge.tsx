@@ -4,7 +4,7 @@ import { useAtlasStore } from '@/lib/v9/store/atlas-store';
 import type { Match } from '@/lib/v9/atlas-types';
 import { atlasAnalyseV9 } from '@/lib/v9/engines/standard';
 import { atlasAnalyseJackpotV9 } from '@/lib/v9/engines/jackpot';
-import { fetchMatchContext, contextVerdict } from '@/lib/v9/agents/context-agent';
+import { fetchMatchContextAuto, contextVerdict } from '@/lib/v9/agents/context-agent';
 import type { MatchContext } from '@/lib/v9/agents/context-agent';
 
 const keyFor = (id: string) => `atlas_ctx_${id}`;
@@ -43,11 +43,12 @@ export default function ContextBadge({ match }: { match: Match }) {
   }, [match, phi, standardParams]);
 
   const fetchCtx = async () => {
-    const key = typeof window !== 'undefined' ? localStorage.getItem('atlas_context_key') ?? '' : '';
-    if (!key.trim()) { setErr('Set your Gemini key in Context Lab first'); return; }
+    const gemini = typeof window !== 'undefined' ? localStorage.getItem('atlas_context_key') ?? '' : '';
+    const openrouter = typeof window !== 'undefined' ? localStorage.getItem('atlas_openrouter_key') ?? '' : '';
+    if (!gemini.trim() && !openrouter.trim()) { setErr('Set a Gemini or OpenRouter key in Context Lab first'); return; }
     setBusy(true); setErr('');
     try {
-      const c = await fetchMatchContext(match.home, match.away, match.league, match.kickoff, key.trim());
+      const c = await fetchMatchContextAuto(match.home, match.away, match.league, match.kickoff, { gemini, openrouter });
       localStorage.setItem(keyFor(match.id), JSON.stringify(c));
       setCtx(c);
     } catch (e) {
