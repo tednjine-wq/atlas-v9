@@ -8,6 +8,10 @@ import type { LearnedParams } from '@/lib/v9/learning/bayesian-learning';
 import type { Outcome } from '@/lib/v9/atlas-types';
 import { fmtPct } from '@/lib/v9/ui/atlas-colors';
 
+const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const predLabel = (p: unknown, fallback: string) =>
+  ((p as { label?: string }).label ?? fallback);
+
 function ParamsCard({ title, params, color, onRecalibrate }: {
   title: string; params: LearnedParams; color: string; onRecalibrate: () => void;
 }) {
@@ -54,7 +58,6 @@ const marketLabel = (market: string, pick: string) => {
 
 export default function LearningPanel() {
   const predictions = useAtlasStore((s) => s.predictions);
-  const matches = useAtlasStore((s) => s.matches);
   const results = useAtlasStore((s) => s.results);
   const submitResult = useAtlasStore((s) => s.submitResult);
   const standardParams = useAtlasStore((s) => s.standardParams);
@@ -64,6 +67,7 @@ export default function LearningPanel() {
   const addFeedback = useAtlasStore((s) => s.addFeedback);
   const feedback = useAtlasStore((s) => s.feedback);
   const marketPosteriors = useAtlasStore((s) => s.marketPosteriors);
+  const predictionLabels = useAtlasStore((s) => s.predictionLabels);
 
   const [slipText, setSlipText] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -84,14 +88,17 @@ export default function LearningPanel() {
 
   const marketStats = useMemo(() => computeMarketStats(parsedBets), [parsedBets]);
 
+  // v9.4: unresolved predictions resolve even after matches are cleared
   const resolvable = useMemo(() => {
     return predictions
       .filter((p) => !p.result)
-      .map((p) => ({ p, m: matches.find((x) => x.id === p.matchId) }))
-      .filter((x) => x.m)
-      .slice(-10)
+      .map((p) => ({
+        p,
+        label: predLabel(p, predictionLabels[p.matchId] ?? 'Unknown match (pre-v9.4)'),
+      }))
+      .slice(-12)
       .reverse();
-  }, [predictions, matches]);
+  }, [predictions, predictionLabels]);
 
   const [form, setForm] = useState<{
     matchLabel: string; market: BetMarket; pick: string; odds: string;
@@ -112,6 +119,13 @@ export default function LearningPanel() {
 
   const totalMarketResolved = marketRanking.reduce((s, m) => s + m.n - 2, 0);
 
+  // v9.4 fallback: link an unlinked history row to an orphan prediction by label
+  const orphanFor = (label: string) => {
+    const core = norm(label.split('·')[0]);
+    return predictions.find((p) =>
+      !p.result && norm(predLabel(p, predictionLabels[p.matchId] ?? '')) === core);
+  };
+
   return (
     <div className="space-y-4">
       <div className="grid gap-3 md:grid-cols-2">
@@ -130,16 +144,16 @@ export default function LearningPanel() {
 
       {resolvable.length > 0 && (
         <div className="rounded-xl border border-blue-500/25 bg-zinc-900/60 p-3">
-          <h3 className="mb-2 text-xs font-bold text-blue-300">RESOLVE 1X2 PREDICTIONS (feeds the main engine)</h3>
+          <h3 className="mb-2 text-xs font-bold text-blue-300">RESOLVE 1X2 PREDICTIONS (survives match clears)</h3>
           <div className="space-y-1">
-            {resolvable.map(({ p, m }) => (
+            {resolvable.map(({ p, label }) => (
               <div key={p.id} className="flex items-center justify-between rounded bg-zinc-950/60 px-2 py-1 text-[11px]">
                 <span className="text-zinc-300">
-                  {m!.home} v {m!.away} · <span className="text-zinc-500">engine: {p.pick}</span>
+                  {label} · <span className="text-zinc-500">engine: {p.pick}</span>
                 </span>
                 <span className="flex gap-1">
                   {(['home', 'draw', 'away'] as Outcome[]).map((o) => (
-                    <button key={o} onClick={() => submitResult(m!.id, o)}
+                    <button key={o} onClick={() => submitResult(p.matchId, o)}
                       className="rounded border border-zinc-700 px-2 py-0.5 text-[10px] font-bold text-zinc-300 hover:bg-zinc-700">
                       {o === 'home' ? 'H' : o === 'draw' ? 'D' : 'A'}
                     </button>
@@ -261,7 +275,9 @@ export default function LearningPanel() {
           <div className="max-h-60 space-y-1 overflow-y-auto">
             {[...feedback].reverse().slice(0, 50).map((f) => {
               const ft = f.matchLabel.match(/FT\s*(\d+)\s*:\s*(\d+)/i);
-              const logged = f.matchId ? results[f.matchId] : undefined;
+              const orphan = !f.matchId ? orphanFor(f.matchLabel) : undefined;
+              const linkId = f.matchId ?? orphan?.matchId;
+              const logged = linkId ? results[linkId] : undefined;
               return (
                 <div key={f.id} className="rounded bg-zinc-950/60 px-2 py-1 text-[11px]">
                   <button onClick={() => setExpandedId(expandedId === f.id ? null : f.id)}
@@ -279,14 +295,14 @@ export default function LearningPanel() {
                   </button>
                   {expandedId === f.id && (
                     <div className="mt-1 flex flex-wrap items-center gap-1 border-t border-zinc-800 pt-1">
-                      {f.matchId ? (
+                      {linkId ? (
                         <>
                           <span className="text-[9px] text-zinc-500">LOG 1X2:</span>
                           {ft && (
                             <button
                               onClick={() => {
                                 const x = parseInt(ft[1], 10), y = parseInt(ft[2], 10);
-                                submitResult(f.matchId!, x > y ? 'home' : x === y ? 'draw' : 'away');
+                                submitResult(linkId, x > y ? 'home' : x === y ? 'draw' : 'away');
                                 setExpandedId(null);
                               }}
                               className="rounded bg-teal-600 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-teal-500">
@@ -294,7 +310,7 @@ export default function LearningPanel() {
                             </button>
                           )}
                           {(['home', 'draw', 'away'] as Outcome[]).map((o) => (
-                            <button key={o} onClick={() => { submitResult(f.matchId!, o); setExpandedId(null); }}
+                            <button key={o} onClick={() => { submitResult(linkId, o); setExpandedId(null); }}
                               className="rounded border border-zinc-700 px-2 py-0.5 text-[10px] font-bold text-zinc-300 hover:bg-zinc-700">
                               {o === 'home' ? 'H' : o === 'draw' ? 'D' : 'A'}
                             </button>
@@ -302,7 +318,7 @@ export default function LearningPanel() {
                           {logged && <span className="text-[9px] text-emerald-400">logged: {logged}</span>}
                         </>
                       ) : (
-                        <span className="text-[9px] text-zinc-600">No linked prediction for this row (match wasn't analyzed in ATLAS).</span>
+                        <span className="text-[9px] text-zinc-600">No linked prediction (analyzed before v9.4 and match cleared).</span>
                       )}
                     </div>
                   )}

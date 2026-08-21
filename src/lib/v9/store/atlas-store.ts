@@ -1,7 +1,7 @@
 // ============================================================
-// ATLAS v9.3 store — v9.3 links feedback entries to their
-// prediction at import time (predictionLabels map + team-name
-// match) so BET HISTORY rows can log 1X2 results directly.
+// ATLAS v9.4 store — v9.4: every PredictionRecord carries its
+// own "home v away" label at analysis time, so 1X2 resolution
+// survives match clears forever (orphan-safe learning loop).
 // RULES 4/6/7/10.3 preserved.
 // ============================================================
 'use client';
@@ -24,7 +24,7 @@ export interface FeedbackEntry {
   market: string; pick: string; odds: number;
   closingOdds?: number;
   result: 'won' | 'lost' | 'pending';
-  matchId?: string; // v9.3: link to prediction for 1X2 logging
+  matchId?: string;
 }
 export interface ApiPick {
   id: string; home: string; away: string; league: string; kickoff: string;
@@ -113,6 +113,7 @@ export const useAtlasStore = create<AtlasState>()(
       })),
       setPhi: (v) => set({ phi: v }),
 
+      // v9.4: prediction carries its own label (orphan-safe)
       recordPrediction: (match, a) => {
         const h = parseFloat(match.h), d = parseFloat(match.d), aw = parseFloat(match.a);
         const entryOdds = h > 1 && d > 1 && aw > 1 ? { home: h, draw: d, away: aw } : undefined;
@@ -124,8 +125,8 @@ export const useAtlasStore = create<AtlasState>()(
               id: crypto.randomUUID(), matchId: match.id, gameType: match.gameType,
               pick: a.pick, confidence: a.confidence, probs: { ...a.probs },
               sofTriggered: a.sofTriggered, margin: a.margin, timestamp: Date.now(),
-              entryOdds,
-            },
+              entryOdds, label: `${match.home} v ${match.away}`,
+            } as PredictionRecord,
           ],
         }));
       },
@@ -227,7 +228,6 @@ export const useAtlasStore = create<AtlasState>()(
         set((s) => ({ matches: [...s.matches, ...newMatches], apiPicks: [] }));
       },
 
-      // v9.3: link feedback → prediction via team-name match
       addFeedback: (e) => set((s) => {
         const labelCore = norm(e.matchLabel.split('·')[0]);
         let linkId: string | undefined;
