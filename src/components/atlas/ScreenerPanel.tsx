@@ -19,6 +19,7 @@ export default function ScreenerPanel() {
   const phi = useAtlasStore((s) => s.phi);
   const standardParams = useAtlasStore((s) => s.standardParams);
   const updateMatch = useAtlasStore((s) => s.updateMatch);
+  const snapshotClosing = useAtlasStore((s) => s.snapshotClosing);
   const [text, setText] = useState('');
   const [asJackpot, setAsJackpot] = useState(false);
   const [ticket, setTicket] = useState<string[]>([]);
@@ -102,10 +103,17 @@ export default function ScreenerPanel() {
     setText('');
   };
 
+  // v9.6: closing-odds snapshot — safe re-paste, no duplicates
+  const snapshot = () => {
+    if (!parsed.length) return;
+    const n = snapshotClosing(parsed);
+    setSentMsg(`📸 Closing odds captured for ${n} prediction${n === 1 ? '' : 's'} — CLV auto-computed`);
+    setText('');
+  };
+
   const toggle = (id: string) =>
     applyTicket(ticket.includes(id) ? ticket.filter((x) => x !== id) : [...ticket, id]);
 
-  // v9.5: explicit human curation → Matches tab
   const sendToMatches = () => {
     if (!ticket.length) return;
     syncStars(ticket);
@@ -136,10 +144,15 @@ export default function ScreenerPanel() {
         <textarea value={text} onChange={(e) => setText(e.target.value)}
           placeholder={'Premier League\n14:00 Arsenal vs Chelsea 2.10 3.40 3.60\n16:30 Manchester City vs Atletico Madrid 1.93 3.55 3.05'}
           className="h-28 w-full rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-300 focus:border-blue-500 focus:outline-none" />
-        <div className="mt-2 flex items-center gap-3">
+        <div className="mt-2 flex flex-wrap items-center gap-3">
           <button onClick={importFixtures} disabled={!parsed.length}
             className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-40">
             Import {parsed.length} fixtures
+          </button>
+          <button onClick={snapshot} disabled={!parsed.length}
+            title="Re-paste the SAME card ~1h before kickoff: new prices become closing odds, CLV auto-computed"
+            className="rounded-lg border border-teal-600 px-3 py-1.5 text-xs font-semibold text-teal-300 hover:bg-teal-500/10 disabled:opacity-40">
+            📸 Snapshot closing odds
           </button>
           <label className="flex items-center gap-1.5 text-[11px] text-zinc-400">
             <input type="checkbox" checked={asJackpot} onChange={(e) => setAsJackpot(e.target.checked)} className="accent-amber-500" />
@@ -147,8 +160,9 @@ export default function ScreenerPanel() {
           </label>
         </div>
         <div className="mt-1 text-[10px] text-zinc-500">
-          Imports auto-build the ticket and star the legs — then curate: click rows to select, ➕ Send to push your picks to Matches.
+          First paste = import & auto-build. Pre-kickoff re-paste = 📸 closing snapshot (no duplicates, CLV auto). Click rows to curate, ➕ Send to push picks to Matches.
         </div>
+        {sentMsg && <div className="mt-1 text-[10px] text-teal-400">{sentMsg}</div>}
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -170,7 +184,6 @@ export default function ScreenerPanel() {
             Clear ticket
           </button>
         )}
-        {sentMsg && <span className="text-[10px] text-teal-400">{sentMsg}</span>}
       </div>
 
       {ticketRows.length > 0 && (

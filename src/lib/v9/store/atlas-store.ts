@@ -1,7 +1,8 @@
 // ============================================================
-// ATLAS v9.5 store — v9.5: submitResult accepts an optional
-// closing-odds override so CLV can be captured even when the
-// match is no longer in the store (cleared cards).
+// ATLAS v9.6 store — v9.6: snapshotClosing() — re-paste the same
+// fixture card ~1h before kickoff; the store diffs entry vs new
+// odds per prediction and auto-computes CLV (no manual typing).
+// Matches live matches OR stored prediction labels (clear-safe).
 // RULES 4/6/7/10.3 preserved.
 // ============================================================
 'use client';
@@ -64,6 +65,7 @@ interface AtlasState {
   setPhi: (v: number) => void;
   recordPrediction: (match: Match, a: AtlasAnalysis) => void;
   submitResult: (id: string, outcome: Outcome, closingOverride?: number) => void;
+  snapshotClosing: (fx: { home: string; away: string; h: string; d: string; a: string }[]) => number;
   forceRecalibrate: (gameType: GameType) => void;
   clearLearningData: () => void;
   runAllSims: () => Promise<void>;
@@ -130,7 +132,6 @@ export const useAtlasStore = create<AtlasState>()(
         }));
       },
 
-      // v9.5: closingOverride lets the user supply the kickoff price
       submitResult: (id, outcome, closingOverride) => {
         set((s) => ({
           results: { ...s.results, [id]: outcome },
@@ -163,6 +164,34 @@ export const useAtlasStore = create<AtlasState>()(
         const n = s2.predictions.filter((p) => p.gameType === pred2.gameType && p.result).length;
         if (n >= MIN_RECALIBRATION_RESULTS && n % MIN_RECALIBRATION_RESULTS === 0)
           get().forceRecalibrate(pred2.gameType);
+      },
+
+      // v9.6: re-paste the same card pre-kickoff → auto CLV
+      snapshotClosing: (fx) => {
+        let n = 0;
+        set((s) => {
+          const predictions = [...s.predictions];
+          for (const f of fx) {
+            const core = norm(`${f.home} v ${f.away}`);
+            let matchId = s.matches.find((m) => norm(`${m.home} v ${m.away}`) === core)?.id;
+            if (!matchId) {
+              const hit = Object.entries(s.predictionLabels).find(([, lbl]) => norm(lbl) === core);
+              if (hit) matchId = hit[0];
+            }
+            if (!matchId) continue;
+            const idx = predictions.findIndex((p) => p.matchId === matchId && p.entryOdds);
+            if (idx < 0) continue;
+            const p = predictions[idx];
+            const closingRaw = p.pick === 'home' ? f.h : p.pick === 'draw' ? f.d : f.a;
+            const closing = parseFloat(closingRaw);
+            const entry = p.entryOdds[p.pick];
+            if (!(closing > 1) || !(entry > 1)) continue;
+            predictions[idx] = { ...p, closingOdds: closing, clv: entry / closing - 1 };
+            n++;
+          }
+          return { predictions };
+        });
+        return n;
       },
 
       forceRecalibrate: (gameType) => {
