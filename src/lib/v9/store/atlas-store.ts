@@ -182,9 +182,11 @@ export const useAtlasStore = create<AtlasState>()(
             const idx = predictions.findIndex((p) => p.matchId === matchId && p.entryOdds);
             if (idx < 0) continue;
             const p = predictions[idx];
+            const eo = p.entryOdds;
+            if (!eo) continue;
             const closingRaw = p.pick === 'home' ? f.h : p.pick === 'draw' ? f.d : f.a;
             const closing = parseFloat(closingRaw);
-            const entry = p.entryOdds[p.pick];
+            const entry = eo[p.pick];
             if (!(closing > 1) || !(entry > 1)) continue;
             predictions[idx] = { ...p, closingOdds: closing, clv: entry / closing - 1 };
             n++;

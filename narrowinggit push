@@ -1,0 +1,18 @@
+warning: in the working copy of 'src/lib/v9/store/atlas-store.ts', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/src/lib/v9/store/atlas-store.ts b/src/lib/v9/store/atlas-store.ts[m
+[1mindex d9b5ba2..db4e1c5 100644[m
+[1m--- a/src/lib/v9/store/atlas-store.ts[m
+[1m+++ b/src/lib/v9/store/atlas-store.ts[m
+[36m@@ -182,9 +182,11 @@[m [mexport const useAtlasStore = create<AtlasState>()([m
+             const idx = predictions.findIndex((p) => p.matchId === matchId && p.entryOdds);[m
+             if (idx < 0) continue;[m
+             const p = predictions[idx];[m
+[32m+[m[32m            const eo = p.entryOdds;[m
+[32m+[m[32m            if (!eo) continue;[m
+             const closingRaw = p.pick === 'home' ? f.h : p.pick === 'draw' ? f.d : f.a;[m
+             const closing = parseFloat(closingRaw);[m
+[31m-            const entry = p.entryOdds[p.pick];[m
+[32m+[m[32m            const entry = eo[p.pick];[m
+             if (!(closing > 1) || !(entry > 1)) continue;[m
+             predictions[idx] = { ...p, closingOdds: closing, clv: entry / closing - 1 };[m
+             n++;[m
