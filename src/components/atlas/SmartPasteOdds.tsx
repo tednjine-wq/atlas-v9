@@ -11,7 +11,8 @@ export default function SmartPasteOdds({ matchId, onClose }: { matchId: string; 
   const updateOdds = useAtlasStore((s) => s.updateOdds);
   const updateMatch = useAtlasStore((s) => s.updateMatch);
 
-  const parsed = useMemo(() => parseSmartPaste(text, { profile }), [text, profile]);
+  const match = useAtlasStore((s) => s.matches.find((m) => m.id === matchId));
+  const parsed = useMemo(() => parseSmartPaste(text, { profile, home: match?.home, away: match?.away }), [text, profile, match?.home, match?.away]);
 
   const fixed = useMemo(() => {
     const odds = { ...parsed.odds };

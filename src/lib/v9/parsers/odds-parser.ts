@@ -1,10 +1,9 @@
 // ============================================================
-// Smart Paste v8 — v8 pre-merges vertical label/odds pairs for
-// over/under lines and bracketed AH lines BEFORE the main loop
-// ("OVER 1.5" + "1.35" → "OVER 1.5 : 1.35"), making capture
-// independent of pending-state edge cases. AH resolver reads
-// brackets from the RAW label. HT/FT aliases corrected.
-// Keeps v6 scoping, v7 sections (exact, ahFT), 3-WAY main capture.
+// Smart Paste v9 — v9 adds Betika dialect support:
+// - Recognizes Betika section headers (Total, Handicap (1x2), etc.)
+// - Catches bare pick labels (Yes, 1/x, X/x, 6+)
+// - Dynamic team totals via opts.home/away (Espanyol Total -> homeOU)
+// Keeps v8 vertical pre-merge, v6 scoping, v7 sections.
 // ============================================================
 export type PasteProfile = 'auto' | 'sportpesa' | 'betika';
 export interface ParseOpts { profile?: PasteProfile; home?: string; away?: string; }
@@ -16,31 +15,42 @@ export interface ParsedOdds {
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
 const cleanLine = (s: string) => s.replace(/\|/g, ' ').trim();
 
-const LABEL_LIKE = /^(over|under)\s|^(yes|no)\s*\(|^(1|x|2)\s*(and|&)\s|^(1 or x|x or 2|1 or 2)$|^\d+ or \d+ goal|^6 or more$|^\d+:\d+$|^any other$|^(home|away|draw|neither|odd|even|1st|2nd)$|^[a-z0-9'. -]+\[[+-]?\d+\.\d+\]$|^(1|x|2)\s\(|^\d$/i;
+// v9: expanded to catch Betika bare picks (yes, 1/x, x/x, 6+)
+const LABEL_LIKE = /^(over|under)\s|^(yes|no|gg|ng)$|^(1|x|2)\s*(and|&)\s|^(1 or x|x or 2|1 or 2)$|^\d+ or \d+ goal|^6 or more$|^\d+:\d+$|^any other$|^(home|away|draw|neither|odd|even|1st|2nd)$|^[a-z0-9'. -]+\[[+-]?\d+\.\d+\]$|^(1|x|2)\s\(|^\d$|^x$|^(1x|x2|12|1\/x|x\/2|1\/2)$|^(x\/x|1\/1|2\/2|1\/x|1\/2|2\/1|x\/1|x\/2)$|^6\+$/i;
 
 const SECTION_RE: { re: RegExp; id: string }[] = [
   { re: /first team to score/, id: 'fts' },
+  { re: /1st goal/, id: 'fts' },
+  { re: /1st half - both teams to score/, id: 'bttsHT' },
   { re: /both teams to score\s*-\s*first half/, id: 'bttsHT' },
+  { re: /1x2 & both teams to score/, id: 'ftrBTTS' },
   { re: /result\s*\+\s*both teams/, id: 'ftrBTTS' },
   { re: /both teams to score/, id: 'btts' },
+  { re: /1x2 & total/, id: 'ftrOU' },
   { re: /result\s*\+\s*total goals/, id: 'ftrOU' },
   { re: /1x2\s*\(|\b\d?\s*up\s*\)/, id: 'skip' },
+  { re: /1st half - 1x2/, id: 'ht3' },
   { re: /3 way\s*-\s*first half/, id: 'ht3' },
   { re: /3 way/, id: 'main' },
   { re: /double chance/, id: 'dc' },
   { re: /draw no bet/, id: 'skip' },
   { re: /asian total goals over\/under\s*-\s*half time/, id: 'athtHT' },
   { re: /asian total goals/, id: 'skip' },
+  { re: /1st half - total/, id: 'ouHT' },
   { re: /over\/under\s+home\s+team|home\s+team\s*-\s*full\s+time/, id: 'homeOU' },
   { re: /over\/under\s+away\s+team|away\s+team\s*-\s*full\s+time/, id: 'awayOU' },
   { re: /over\/under\s*-\s*half time/, id: 'ouHT' },
   { re: /over\/under\s*-\s*full time/, id: 'ouFT' },
+  { re: /^total$/, id: 'ouFT' },
   { re: /total goals exactly/, id: 'exact' },
+  { re: /exact goals/, id: 'exact' },
   { re: /number of goals in groups/, id: 'groups' },
   { re: /correct score\s*-\s*first half/, id: 'htcs' },
   { re: /correct score/, id: 'cs' },
   { re: /half with most goals/, id: 'hmost' },
   { re: /half time\/full time/, id: 'htft' },
+  { re: /halftime\/fulltime/, id: 'htft' },
+  { re: /handicap \(1x2\)/, id: 'eh' },
   { re: /euro handicap/, id: 'eh' },
   { re: /asian handicap\s*-\s*half time/, id: 'skip' },
   { re: /asian handicap/, id: 'ahFT' },
@@ -77,9 +87,9 @@ function resolveIn(sec: string, label: string, rowInSec: number): string | null 
       return /yes|gg/.test(l) ? 'bttsYes' : /no|ng/.test(l) ? 'bttsNo' : null;
     case 'bttsHT': return /yes|gg/.test(l) ? 'bttsHTYes' : /no|ng/.test(l) ? 'bttsHTNo' : null;
     case 'dc':
-      if (/1 or x|^1x$/.test(l)) return 'dc1X';
-      if (/x or 2|^x2$/.test(l)) return 'dcX2';
-      if (/1 or 2|^12$/.test(l)) return 'dc12';
+      if (/1 or x|^1x$|^1\/x$/.test(l)) return 'dc1X';
+      if (/x or 2|^x2$|^x\/2$/.test(l)) return 'dcX2';
+      if (/1 or 2|^12$|^1\/2$/.test(l)) return 'dc12';
       return null;
     case 'groups':
       if (/^0 or 1/.test(l)) return 'group01';
@@ -88,7 +98,7 @@ function resolveIn(sec: string, label: string, rowInSec: number): string | null 
       if (/^6 or more/.test(l)) return 'group6p';
       return null;
     case 'exact':
-      if (/^6 or more/.test(l)) return 'exact6plus';
+      if (/^6 or more|^6\+$/.test(l)) return 'exact6plus';
       if (/^\d$/.test(l)) return `exact${l}`;
       return null;
     case 'ouFT':
@@ -99,7 +109,7 @@ function resolveIn(sec: string, label: string, rowInSec: number): string | null 
     case 'awayOU': return ou ? ouKey(ou[1] as 'over' | 'under', parseFloat(ou[2]), 'away') : null;
     case 'athtHT': return ou ? ouKey(ou[1] as 'over' | 'under', parseFloat(ou[2]), 'atht') : null;
     case 'ahFT': {
-      const m = l.match(/\[\s*([+-]?\d+(?:\.\d+)?)\s*\]/);   // raw label keeps brackets
+      const m = l.match(/\[\s*([+-]?\d+(?:\.\d+)?)\s*\]/);
       if (!m) return null;
       const pos = m[1].startsWith('+');
       const lk = String(Math.abs(parseFloat(m[1])));
@@ -160,7 +170,7 @@ const LABEL_MAP: Record<string, string> = {
   '0 or 1 goal': 'group01', '2 or 3 goals': 'group23', '4 or 5 goals': 'group45', '6 or more': 'group6p',
 };
 
-export function parseSmartPaste(text: string, _opts: ParseOpts = {}): ParsedOdds {
+export function parseSmartPaste(text: string, opts: ParseOpts = {}): ParsedOdds {
   const odds: Record<string, number> = {};
   const unmatched: string[] = [];
   let main: { h: number; d: number; a: number } | undefined;
@@ -168,7 +178,6 @@ export function parseSmartPaste(text: string, _opts: ParseOpts = {}): ParsedOdds
 
   const raw = text.split(/\n/).map(cleanLine).filter(Boolean);
 
-  // v8: pre-merge vertical pairs for over/under + bracketed AH lines
   const lines: string[] = [];
   for (let i = 0; i < raw.length; i++) {
     const cur = raw[i], nxt = raw[i + 1];
@@ -181,6 +190,10 @@ export function parseSmartPaste(text: string, _opts: ParseOpts = {}): ParsedOdds
   let sec: string | null = null;
   let rowInSec = 0;
   let pending: string | null = null;
+
+  // v9: dynamic team totals for Betika
+  const homeTok = opts.home?.toLowerCase().split(' ').filter(w => w.length > 3).pop() ?? '';
+  const awayTok = opts.away?.toLowerCase().split(' ').filter(w => w.length > 3).pop() ?? '';
 
   const sink = (label: string, val: number) => {
     if (sec === 'skip') return;
@@ -206,6 +219,15 @@ export function parseSmartPaste(text: string, _opts: ParseOpts = {}): ParsedOdds
   for (const line of lines) {
     if (/\d{2}-\d{2}-\d{4}/.test(line)) continue;
     const low = norm(line);
+    
+    // v9: dynamic team totals detection
+    if (homeTok && low.includes(homeTok) && low.includes('total') && !low.includes('half')) {
+      sec = 'homeOU'; rowInSec = 0; pending = null; continue;
+    }
+    if (awayTok && low.includes(awayTok) && low.includes('total') && !low.includes('half')) {
+      sec = 'awayOU'; rowInSec = 0; pending = null; continue;
+    }
+
     const hdr = SECTION_RE.find((s) => s.re.test(low));
     if (hdr && !/\d\.\d{2}/.test(line)) { sec = hdr.id; rowInSec = 0; pending = null; continue; }
 
