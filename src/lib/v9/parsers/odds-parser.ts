@@ -1,9 +1,11 @@
 // ============================================================
-// Smart Paste v9 — v9 adds Betika dialect support:
-// - Recognizes Betika section headers (Total, Handicap (1x2), etc.)
-// - Catches bare pick labels (Yes, 1/x, X/x, 6+)
-// - Dynamic team totals via opts.home/away (Espanyol Total -> homeOU)
-// Keeps v8 vertical pre-merge, v6 scoping, v7 sections.
+// Smart Paste v10 — Betika dialect COMPLETED.
+// v10 adds: full skip table for unmodeled Betika noise
+// (corners/bookings/scorers/multigoals/margins/combos), ordered
+// alias table so Betika titles resolve to the same section IDs
+// as SportPesa, and dynamic team-section routing
+// ("<Home> Total" → homeOU, other "<Team> …" → skip).
+// One screener, two dialects — math stays bookmaker-agnostic.
 // ============================================================
 export type PasteProfile = 'auto' | 'sportpesa' | 'betika';
 export interface ParseOpts { profile?: PasteProfile; home?: string; away?: string; }
@@ -15,44 +17,56 @@ export interface ParsedOdds {
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
 const cleanLine = (s: string) => s.replace(/\|/g, ' ').trim();
 
-// v9: expanded to catch Betika bare picks (yes, 1/x, x/x, 6+)
 const LABEL_LIKE = /^(over|under)\s|^(yes|no|gg|ng)$|^(1|x|2)\s*(and|&)\s|^(1 or x|x or 2|1 or 2)$|^\d+ or \d+ goal|^6 or more$|^\d+:\d+$|^any other$|^(home|away|draw|neither|odd|even|1st|2nd)$|^[a-z0-9'. -]+\[[+-]?\d+\.\d+\]$|^(1|x|2)\s\(|^\d$|^x$|^(1x|x2|12|1\/x|x\/2|1\/2)$|^(x\/x|1\/1|2\/2|1\/x|1\/2|2\/1|x\/1|x\/2)$|^6\+$/i;
 
+// ORDER MATTERS: skips & specific headers first, general last.
 const SECTION_RE: { re: RegExp; id: string }[] = [
-  { re: /first team to score/, id: 'fts' },
-  { re: /1st goal/, id: 'fts' },
-  { re: /1st half - both teams to score/, id: 'bttsHT' },
-  { re: /both teams to score\s*-\s*first half/, id: 'bttsHT' },
-  { re: /1x2 & both teams to score/, id: 'ftrBTTS' },
-  { re: /result\s*\+\s*both teams/, id: 'ftrBTTS' },
+  // ---- unmodeled noise (Betika-heavy) ----
+  { re: /10 minutes/, id: 'skip' },
+  { re: /multigoals/, id: 'skip' },
+  { re: /winning margin/, id: 'skip' },
+  { re: /goalscorer/, id: 'skip' },
+  { re: /corner/, id: 'skip' },
+  { re: /booking/, id: 'skip' },
+  { re: /clean sheet/, id: 'skip' },
+  { re: /win to nil/, id: 'skip' },
+  { re: /win both halves|win either half|score in both halves/, id: 'skip' },
+  { re: /both halves (over|under)/, id: 'skip' },
+  { re: /1st\/2nd half/, id: 'skip' },
+  { re: /who will win/, id: 'skip' },
+  { re: /total & both teams/, id: 'skip' },
+  { re: /double chance &/, id: 'skip' },
+  { re: /halftime\/fulltime &/, id: 'skip' },
+  { re: /2nd half/, id: 'skip' },
+  { re: /1st half - 1x2 &/, id: 'skip' },
+  { re: /1st half - double chance/, id: 'skip' },
+  { re: /1st half - handicap/, id: 'skip' },
+  { re: /1st half - exact goals/, id: 'skip' },
+  { re: /asian handicap - half time/, id: 'skip' },
+  { re: /draw no bet/, id: 'skip' },
+  // ---- modeled markets ----
+  { re: /first team to score|1st goal/, id: 'fts' },
+  { re: /1x2 & both teams|result\s*\+\s*both teams/, id: 'ftrBTTS' },
+  { re: /1x2 & total|result\s*\+\s*total goals/, id: 'ftrOU' },
+  { re: /1st half - both teams to score|both teams to score\s*-\s*first half/, id: 'bttsHT' },
   { re: /both teams to score/, id: 'btts' },
-  { re: /1x2 & total/, id: 'ftrOU' },
-  { re: /result\s*\+\s*total goals/, id: 'ftrOU' },
-  { re: /1x2\s*\(|\b\d?\s*up\s*\)/, id: 'skip' },
-  { re: /1st half - 1x2/, id: 'ht3' },
-  { re: /3 way\s*-\s*first half/, id: 'ht3' },
+  { re: /1st half - 1x2|3 way\s*-\s*first half/, id: 'ht3' },
   { re: /3 way/, id: 'main' },
   { re: /double chance/, id: 'dc' },
-  { re: /draw no bet/, id: 'skip' },
   { re: /asian total goals over\/under\s*-\s*half time/, id: 'athtHT' },
   { re: /asian total goals/, id: 'skip' },
-  { re: /1st half - total/, id: 'ouHT' },
+  { re: /1st half - total|over\/under\s*-\s*half time/, id: 'ouHT' },
   { re: /over\/under\s+home\s+team|home\s+team\s*-\s*full\s+time/, id: 'homeOU' },
   { re: /over\/under\s+away\s+team|away\s+team\s*-\s*full\s+time/, id: 'awayOU' },
-  { re: /over\/under\s*-\s*half time/, id: 'ouHT' },
   { re: /over\/under\s*-\s*full time/, id: 'ouFT' },
   { re: /^total$/, id: 'ouFT' },
-  { re: /total goals exactly/, id: 'exact' },
-  { re: /exact goals/, id: 'exact' },
+  { re: /total goals exactly|exact goals/, id: 'exact' },
   { re: /number of goals in groups/, id: 'groups' },
-  { re: /correct score\s*-\s*first half/, id: 'htcs' },
+  { re: /correct score\s*-\s*first half|1st half - correct score/, id: 'htcs' },
   { re: /correct score/, id: 'cs' },
   { re: /half with most goals/, id: 'hmost' },
-  { re: /half time\/full time/, id: 'htft' },
-  { re: /halftime\/fulltime/, id: 'htft' },
-  { re: /handicap \(1x2\)/, id: 'eh' },
-  { re: /euro handicap/, id: 'eh' },
-  { re: /asian handicap\s*-\s*half time/, id: 'skip' },
+  { re: /half time\/full time|halftime\/fulltime/, id: 'htft' },
+  { re: /handicap \(1x2\)|euro handicap/, id: 'eh' },
   { re: /asian handicap/, id: 'ahFT' },
   { re: /odd\s*\/?\s*even/, id: 'oe' },
 ];
@@ -191,7 +205,6 @@ export function parseSmartPaste(text: string, opts: ParseOpts = {}): ParsedOdds 
   let rowInSec = 0;
   let pending: string | null = null;
 
-  // v9: dynamic team totals for Betika
   const homeTok = opts.home?.toLowerCase().split(' ').filter(w => w.length > 3).pop() ?? '';
   const awayTok = opts.away?.toLowerCase().split(' ').filter(w => w.length > 3).pop() ?? '';
 
@@ -219,13 +232,16 @@ export function parseSmartPaste(text: string, opts: ParseOpts = {}): ParsedOdds 
   for (const line of lines) {
     if (/\d{2}-\d{2}-\d{4}/.test(line)) continue;
     const low = norm(line);
-    
-    // v9: dynamic team totals detection
-    if (homeTok && low.includes(homeTok) && low.includes('total') && !low.includes('half')) {
-      sec = 'homeOU'; rowInSec = 0; pending = null; continue;
-    }
-    if (awayTok && low.includes(awayTok) && low.includes('total') && !low.includes('half')) {
-      sec = 'awayOU'; rowInSec = 0; pending = null; continue;
+
+    // v10: dynamic team sections — "<Team> Total" (FT) maps to
+    // home/away OU; every other team-specific header is skipped.
+    const isHome = homeTok.length > 2 && low.includes(homeTok);
+    const isAway = awayTok.length > 2 && low.includes(awayTok);
+    if (isHome || isAway) {
+      sec = (isHome || !isAway) && low.includes('total') && !low.includes('half') ? 'homeOU'
+        : isAway && low.includes('total') && !low.includes('half') ? 'awayOU'
+        : 'skip';
+      rowInSec = 0; pending = null; continue;
     }
 
     const hdr = SECTION_RE.find((s) => s.re.test(low));
