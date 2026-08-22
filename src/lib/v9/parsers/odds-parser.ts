@@ -152,7 +152,7 @@ function resolveIn(sec: string, label: string, rowInSec: number): string | null 
     case 'cs':
     case 'htcs': {
       const pre = sec === 'cs' ? 'cs' : 'htcs';
-      if (/any other/.test(l)) return `${pre}_any`;
+      if (/^(any other|other)$/.test(l)) return `${pre}_any`;
       const m = l.match(/^(\d+)\s*[:\-]\s*(\d+)$/);
       if (m && +m[1] <= 9 && +m[2] <= 9) return `${pre}_${m[1]}_${m[2]}`;
       return null;
