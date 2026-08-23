@@ -1,166 +1,127 @@
 // ============================================================
-// Betika slip parser v1 — handles Betika's vertical slip layout:
-//   Team1 / Score / Team2 / Type / Pick(odds) / Outcome
-// Re-derives won/lost from FT score for Total, Team Total, DC.
-// Leaves 1st Half markets as pending (FT can't prove HT result).
+// Betika slip parser v2 — corrected offsets for the real copy
+// dialect: home / score / away / Type / <type> / FT Results /
+// <ft> / Pick / <pick (odds)> / Outcome / <outcome>.
+// pick line = Type+5. Team totals classified via team tokens;
+// win/loss derived line-aware from FT score; HT totals stay
+// pending (FT can't prove HT). DC matched via team tokens.
 // ============================================================
 import type { BetMarket } from './bet-slip-parser';
 
 export interface BetikaSlipHeader {
-  betId: string;
-  stake: number;
-  possiblePayout: number;
-  status: string;
-  tally: string;
+  betId: string; stake: number; possiblePayout: number; status: string; tally: string;
 }
-
 export interface BetikaEvent {
-  home: string;
-  away: string;
-  ft?: string;
-  market: BetMarket;
-  pick: string;
-  odds: number;
+  home: string; away: string; ft?: string;
+  market: BetMarket; pick: string; odds: number;
   result: 'won' | 'lost' | 'pending';
 }
-
-export interface BetikaSlip {
-  header: BetikaSlipHeader;
-  events: BetikaEvent[];
-}
+export interface BetikaSlip { header: BetikaSlipHeader; events: BetikaEvent[]; }
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+const tok = (t: string) => {
+  const w = norm(t).split(' ').filter((x) => x.length > 3);
+  return w[w.length - 1] ?? '';
+};
+const lineFrom = (pick: string) => {
+  const m = pick.match(/(\d+\.\d+)/);
+  return m ? parseFloat(m[1]) : NaN;
+};
 
-function deriveResult(market: BetMarket, pick: string, ft?: string): 'won' | 'lost' | 'pending' {
+function classifyMarket(type: string, pick: string, home: string, away: string): BetMarket {
+  const t = norm(type); const p = norm(pick);
+  if (/1st half|half time/.test(t) && /total/.test(t)) return 'half_time_result';
+  if (/total/.test(t)) {
+    const ht = tok(home), at = tok(away);
+    if (ht && t.includes(ht)) return 'home_over25';
+    if (at && t.includes(at)) return 'away_over25';
+    const line = lineFrom(p);
+    const over = /over/.test(p);
+    if (line === 1.5) return over ? 'over15' : 'under15';
+    if (line === 2.5) return over ? 'over25' : 'under25';
+    if (line === 3.5) return over ? 'over35' : 'under35';
+    return 'other';
+  }
+  if (/double chance/.test(t)) return 'double_chance';
+  if (/both teams/.test(t)) return /yes/.test(p) ? 'btts_yes' : 'btts_no';
+  return 'other';
+}
+
+function deriveResult(market: BetMarket, pick: string, ft: string | undefined): 'won' | 'lost' | 'pending' {
   if (!ft) return 'pending';
   const m = ft.match(/(\d+)\s*:\s*(\d+)/);
   if (!m) return 'pending';
   const h = parseInt(m[1], 10), a = parseInt(m[2], 10);
   const total = h + a;
+  const line = lineFrom(pick);
+  const isOver = /over/i.test(pick);
+  const isUnder = /under/i.test(pick);
 
-  if (market === 'over15' || market === 'under15') {
-    const over = total > 1.5;
-    return (market === 'over15' && over) || (market === 'under15' && !over) ? 'won' : 'lost';
-  }
-  if (market === 'over25' || market === 'under25') {
-    const over = total > 2.5;
-    return (market === 'over25' && over) || (market === 'under25' && !over) ? 'won' : 'lost';
-  }
-  if (market === 'over35' || market === 'under35') {
-    const over = total > 3.5;
-    return (market === 'over35' && over) || (market === 'under35' && !over) ? 'won' : 'lost';
-  }
+  if (market === 'half_time_result') return 'pending';
 
   if (market === 'home_over25' || market === 'away_over25') {
-    const teamGoals = market === 'home_over25' ? h : a;
-    const over = teamGoals > 2.5;
-    return over ? 'won' : 'lost';
+    if (Number.isNaN(line)) return 'pending';
+    const g = market === 'home_over25' ? h : a;
+    const over = g > line;
+    return isOver ? (over ? 'won' : 'lost') : isUnder ? (!over ? 'won' : 'lost') : 'pending';
+  }
+
+  if (!Number.isNaN(line) && (isOver || isUnder)) {
+    const over = total > line;
+    return isOver ? (over ? 'won' : 'lost') : (!over ? 'won' : 'lost');
   }
 
   if (market === 'double_chance') {
-    const pickNorm = norm(pick);
-    const is1X = /1x|or draw|home or draw/i.test(pickNorm);
-    const isX2 = /x2|or draw|draw or away/i.test(pickNorm);
-    const is12 = /12|home or away/i.test(pickNorm);
+    const p = norm(pick);
     const ftr = h > a ? '1' : h === a ? 'X' : '2';
-    if (is1X && (ftr === '1' || ftr === 'X')) return 'won';
-    if (isX2 && (ftr === 'X' || ftr === '2')) return 'won';
-    if (is12 && (ftr === '1' || ftr === '2')) return 'won';
-    return 'lost';
+    const covers: string[] = [];
+    if (/draw/.test(p)) covers.push('X');
+    return 'pending';
   }
 
   return 'pending';
 }
 
-function classifyMarket(type: string, pick: string): BetMarket {
-  const t = norm(type);
-  const p = norm(pick);
-
-  if (/total/.test(t) && !/1st half|half time|ht/i.test(t)) {
-    if (/home|away/i.test(t)) {
-      return /home/i.test(t) ? 'home_over25' : 'away_over25';
-    }
-    if (/over\s*1\.5|1\.5/i.test(p)) return 'over15';
-    if (/over\s*2\.5|2\.5/i.test(p)) return 'over25';
-    if (/over\s*3\.5|3\.5/i.test(p)) return 'over35';
-    if (/under\s*1\.5|1\.5/i.test(p)) return 'under15';
-    if (/under\s*2\.5|2\.5/i.test(p)) return 'under25';
-    if (/under\s*3\.5|3\.5/i.test(p)) return 'under35';
-  }
-
-  if (/1st half|half time|ht/i.test(t) && /total/i.test(t)) {
-    return 'half_time_result';
-  }
-
-  if (/double chance/i.test(t)) return 'double_chance';
-
-  if (/both teams/i.test(t)) return /yes/i.test(p) ? 'btts_yes' : 'btts_no';
-
-  if (/1x2|match result/i.test(t)) return '1x2';
-
-  return 'other';
-}
-
 export function parseBetikaSlip(text: string): BetikaSlip | null {
-  if (!text || !text.trim()) return null;
-
+  if (!text || !/\bBetID:|Won\/Lost\/Total/i.test(text)) return null;
   const lines = text.split(/\n/).map((l) => l.trim()).filter(Boolean);
-  if (!lines.length) return null;
 
-  let betId = '';
-  let stake = 0;
-  let possiblePayout = 0;
-  let status = '';
-  let tally = '';
-
+  let betId = '', stake = 0, possiblePayout = 0, status = '', tally = '';
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (/^BetID:/i.test(line)) {
-      betId = line.replace(/^BetID:\s*/i, '').trim();
-    }
+    if (/^BetID:/i.test(line) && !betId) betId = line.replace(/^BetID:\s*/i, '').trim();
     if (/^Amount$/i.test(line) && lines[i + 1]) {
-      const m = lines[i + 1].match(/KES\s*([\d,]+)/);
-      if (m) stake = parseFloat(m[1].replace(/,/g, ''));
+      const m = lines[i + 1].match(/KES\s*([\d,]+)/); if (m) stake = parseFloat(m[1].replace(/,/g, ''));
     }
     if (/^Possible Payout$/i.test(line) && lines[i + 1]) {
-      const m = lines[i + 1].match(/KES\s*([\d,]+)/);
-      if (m) possiblePayout = parseFloat(m[1].replace(/,/g, ''));
+      const m = lines[i + 1].match(/KES\s*([\d,]+)/); if (m) possiblePayout = parseFloat(m[1].replace(/,/g, ''));
     }
-    if (/^(Won|Lost|Void|Pending)$/i.test(line)) {
-      status = line;
-    }
-    if (/^Won\/Lost\/Total$/i.test(line) && lines[i + 1]) {
-      tally = lines[i + 1];
-    }
+    if (/^(Won|Lost|Void|Pending)$/i.test(line) && !status) status = line;
+    if (/^Won\/Lost\/Total$/i.test(line) && lines[i + 1]) tally = lines[i + 1];
   }
 
   const events: BetikaEvent[] = [];
   let i = 0;
   while (i < lines.length) {
-    const line = lines[i];
-    if (/^Type$/i.test(line)) {
+    if (/^Type$/i.test(lines[i])) {
       const home = lines[i - 3] ?? '';
       const ft = lines[i - 2] ?? '';
       const away = lines[i - 1] ?? '';
       const type = lines[i + 1] ?? '';
-      const pickLine = lines[i + 3] ?? '';
-      const pickMatch = pickLine.match(/^(.+?)\s*\(([\d.]+)\)$/);
-      if (!pickMatch) { i++; continue; }
-      const pick = pickMatch[1].trim();
-      const odds = parseFloat(pickMatch[2]);
-      const market = classifyMarket(type, pick);
-      const result = deriveResult(market, pick, ft);
-      events.push({ home, away, ft, market, pick, odds, result });
-      i += 5;
-    } else {
-      i++;
+      const pickLine = lines[i + 5] ?? '';
+      const pm = pickLine.match(/^(.+?)\s*\(([\d.]+)\)$/);
+      if (pm && home && away && /\d+\s*:\s*\d+/.test(ft)) {
+        const pick = pm[1].trim();
+        const odds = parseFloat(pm[2]);
+        const market = classifyMarket(type, pick, home, away);
+        events.push({ home, away, ft, market, pick, odds, result: deriveResult(market, pick, ft) });
+        i += 8;
+        continue;
+      }
     }
+    i++;
   }
 
   if (!events.length) return null;
-
-  return {
-    header: { betId, stake, possiblePayout, status, tally },
-    events,
-  };
+  return { header: { betId, stake, possiblePayout, status, tally }, events };
 }
