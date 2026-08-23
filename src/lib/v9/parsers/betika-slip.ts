@@ -132,4 +132,4 @@ export function parseBetikaSlip(text: string): BetikaSlip | null {
 
   if (!events.length) return null;
   return { header: { betId, stake, possiblePayout, status, tally }, events };
-}q
+}
