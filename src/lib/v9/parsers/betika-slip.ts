@@ -1,10 +1,9 @@
 // ============================================================
-// Betika slip parser v2 — corrected offsets for the real copy
-// dialect: home / score / away / Type / <type> / FT Results /
+// Betika slip parser v3 — clean single-block build.
+// Dialect: home / score / away / Type / <type> / FT Results /
 // <ft> / Pick / <pick (odds)> / Outcome / <outcome>.
-// pick line = Type+5. Team totals classified via team tokens;
-// win/loss derived line-aware from FT score; HT totals stay
-// pending (FT can't prove HT). DC matched via team tokens.
+// pick line = Type+5. Team totals via team tokens; win/loss
+// derived line-aware from FT score; HT totals stay pending.
 // ============================================================
 import type { BetMarket } from './bet-slip-parser';
 
@@ -47,7 +46,9 @@ function classifyMarket(type: string, pick: string, home: string, away: string):
   return 'other';
 }
 
-function deriveResult(market: BetMarket, pick: string, ft: string | undefined): 'won' | 'lost' | 'pending' {
+function deriveResult(
+  market: BetMarket, pick: string, ft: string | undefined, home: string, away: string,
+): 'won' | 'lost' | 'pending' {
   if (!ft) return 'pending';
   const m = ft.match(/(\d+)\s*:\s*(\d+)/);
   if (!m) return 'pending';
@@ -66,17 +67,21 @@ function deriveResult(market: BetMarket, pick: string, ft: string | undefined): 
     return isOver ? (over ? 'won' : 'lost') : isUnder ? (!over ? 'won' : 'lost') : 'pending';
   }
 
-  if (!Number.isNaN(line) && (isOver || isUnder)) {
-    const over = total > line;
-    return isOver ? (over ? 'won' : 'lost') : (!over ? 'won' : 'lost');
-  }
-
   if (market === 'double_chance') {
     const p = norm(pick);
     const ftr = h > a ? '1' : h === a ? 'X' : '2';
     const covers: string[] = [];
     if (/draw/.test(p)) covers.push('X');
-    return 'pending';
+    const ht = tok(home), at = tok(away);
+    if (ht && p.includes(ht)) covers.push('1');
+    if (at && p.includes(at)) covers.push('2');
+    if (!covers.length) return 'pending';
+    return covers.includes(ftr) ? 'won' : 'lost';
+  }
+
+  if (!Number.isNaN(line) && (isOver || isUnder)) {
+    const over = total > line;
+    return isOver ? (over ? 'won' : 'lost') : (!over ? 'won' : 'lost');
   }
 
   return 'pending';
@@ -91,10 +96,10 @@ export function parseBetikaSlip(text: string): BetikaSlip | null {
     const line = lines[i];
     if (/^BetID:/i.test(line) && !betId) betId = line.replace(/^BetID:\s*/i, '').trim();
     if (/^Amount$/i.test(line) && lines[i + 1]) {
-      const m = lines[i + 1].match(/KES\s*([\d,]+)/); if (m) stake = parseFloat(m[1].replace(/,/g, ''));
+      const mm = lines[i + 1].match(/KES\s*([\d,]+)/); if (mm) stake = parseFloat(mm[1].replace(/,/g, ''));
     }
     if (/^Possible Payout$/i.test(line) && lines[i + 1]) {
-      const m = lines[i + 1].match(/KES\s*([\d,]+)/); if (m) possiblePayout = parseFloat(m[1].replace(/,/g, ''));
+      const mm = lines[i + 1].match(/KES\s*([\d,]+)/); if (mm) possiblePayout = parseFloat(mm[1].replace(/,/g, ''));
     }
     if (/^(Won|Lost|Void|Pending)$/i.test(line) && !status) status = line;
     if (/^Won\/Lost\/Total$/i.test(line) && lines[i + 1]) tally = lines[i + 1];
@@ -114,7 +119,10 @@ export function parseBetikaSlip(text: string): BetikaSlip | null {
         const pick = pm[1].trim();
         const odds = parseFloat(pm[2]);
         const market = classifyMarket(type, pick, home, away);
-        events.push({ home, away, ft, market, pick, odds, result: deriveResult(market, pick, ft) });
+        events.push({
+          home, away, ft, market, pick, odds,
+          result: deriveResult(market, pick, ft, home, away),
+        });
         i += 8;
         continue;
       }
@@ -124,4 +132,4 @@ export function parseBetikaSlip(text: string): BetikaSlip | null {
 
   if (!events.length) return null;
   return { header: { betId, stake, possiblePayout, status, tally }, events };
-}
+}q
