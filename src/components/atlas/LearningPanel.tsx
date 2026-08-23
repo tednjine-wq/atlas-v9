@@ -4,6 +4,7 @@ import { useAtlasStore } from '@/lib/v9/store/atlas-store';
 import { parseBetSlip, computeMarketStats, MANUAL_MARKET_OPTIONS } from '@/lib/v9/parsers/bet-slip-parser';
 import type { BetMarket } from '@/lib/v9/parsers/bet-slip-parser';
 import { parseSportPesaSlip } from '@/lib/v9/parsers/sportpesa-slip';
+import { parseBetikaSlip } from '@/lib/v9/parsers/betika-slip';
 import type { LearnedParams } from '@/lib/v9/learning/bayesian-learning';
 import type { Outcome } from '@/lib/v9/atlas-types';
 import { fmtPct } from '@/lib/v9/ui/atlas-colors';
@@ -74,6 +75,8 @@ export default function LearningPanel() {
   const [closingInput, setClosingInput] = useState<Record<string, string>>({});
   const sportPesaSlip = useMemo(() => parseSportPesaSlip(slipText), [slipText]);
 
+  const betikaSlip = useMemo(() => parseBetikaSlip(slipText), [slipText]);
+  
   const parsedBets = useMemo(() => {
     if (sportPesaSlip && sportPesaSlip.legs.length) {
       return sportPesaSlip.legs.map((l) => ({
@@ -84,8 +87,17 @@ export default function LearningPanel() {
         result: l.won === true ? 'won' : l.won === false ? 'lost' : 'pending',
       })) as ReturnType<typeof parseBetSlip>;
     }
+    if (betikaSlip && betikaSlip.events.length) {
+      return betikaSlip.events.map((e) => ({
+        teams: `${e.home} v ${e.away}${e.ft ? ` · FT ${e.ft}` : ''}`,
+        market: e.market,
+        pick: e.pick,
+        odds: e.odds,
+        result: e.result,
+      })) as ReturnType<typeof parseBetSlip>;
+    }
     return parseBetSlip(slipText);
-  }, [sportPesaSlip, slipText]);
+  }, [sportPesaSlip, betikaSlip, slipText]);
 
   const marketStats = useMemo(() => computeMarketStats(parsedBets), [parsedBets]);
 
