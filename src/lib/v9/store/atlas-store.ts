@@ -179,7 +179,7 @@ export const useAtlasStore = create<AtlasState>()(
               if (hit) matchId = hit[0];
             }
             if (!matchId) continue;
-            const idx = predictions.findIndex((p) => p.matchId === matchId && p.entryOdds);
+            const idx = predictions.findIndex((p) => p.matchId === matchId && p.entryOdds && !p.result);
             if (idx < 0) continue;
             const p = predictions[idx];
             const eo = p.entryOdds;
