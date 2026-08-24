@@ -243,12 +243,16 @@ export default function ScreenerPanel() {
                   ✂️ Trim
                 </button>
               </div>
-            ) : (
+            ) : parlayProb >= ADV_TARGET ? (
               <div className="text-emerald-400">Single slip meets the 40% target ✅</div>
+            ) : (
+              <div className="text-amber-300">Best achievable slip — below the 40% comfort target. +EV? Then small stake; no EV? Skip.</div>
             )}
-            <div className="text-zinc-400">
-              Or split {advisor.n} legs into <b className="text-zinc-200">{advisor.slips} slip{advisor.slips > 1 ? 's' : ''} of ≤{advisor.slipSize} legs</b> (each ≈{fmtPct(advisor.slipProb)} to hit) — wipeout risk ≈{fmtPct(advisor.wipeoutSplit)} vs {fmtPct(1 - parlayProb)} for one big slip.
-            </div>
+            {advisor.slips > 1 && (
+              <div className="text-zinc-400">
+                Or split {advisor.n} legs into <b className="text-zinc-200">{advisor.slips} slips of ≤{advisor.slipSize} legs</b> (each ≈{fmtPct(advisor.slipProb)} to hit) — wipeout risk ≈{fmtPct(advisor.wipeoutSplit)} vs {fmtPct(1 - parlayProb)} for one big slip.
+              </div>
+            )}
           </div>
         </div>
       )}
