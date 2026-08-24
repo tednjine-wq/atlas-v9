@@ -274,7 +274,7 @@ export const useAtlasStore = create<AtlasState>()(
         const newFeedback = [...s.feedback, { ...e, matchId: linkId, id: crypto.randomUUID(), ts: Date.now() }];
         const newPosteriors = { ...s.marketPosteriors };
         if (e.result === 'won' || e.result === 'lost') {
-          const key = `${e.market}:${e.pick}`;
+          const key = `${e.market}:${e.pick.trim().toUpperCase()}`;
           const cur = newPosteriors[key] ?? { alpha: 1, beta: 1 };
           newPosteriors[key] = e.result === 'won'
             ? { alpha: cur.alpha + 1, beta: cur.beta }
@@ -324,6 +324,18 @@ export const useAtlasStore = create<AtlasState>()(
         if (state && state.standardParams.version !== PARAMS_VERSION) state.standardParams = defaultParams();
         if (state && state.jackpotParams.version !== PARAMS_VERSION) state.jackpotParams = defaultParams();
         if (state && !state.marketPosteriors) state.marketPosteriors = {};
+        if (state && state.marketPosteriors) {
+          const merged: Record<string, { alpha: number; beta: number }> = {};
+          for (const [k, v] of Object.entries(state.marketPosteriors)) {
+            const i = k.indexOf(':');
+            const nk = `${k.slice(0, i)}:${k.slice(i + 1).trim().toUpperCase()}`;
+            const cur = merged[nk] ?? { alpha: 1, beta: 1 };
+            cur.alpha += v.alpha - 1;
+            cur.beta += v.beta - 1;
+            merged[nk] = cur;
+          }
+          state.marketPosteriors = merged;
+        }
         if (state && !state.predictionLabels) state.predictionLabels = {};
       },
     },
