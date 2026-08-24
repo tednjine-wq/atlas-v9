@@ -142,7 +142,7 @@ export default function AtlasPage() {
       {tab === 'API Picks' && <APIPicksPanel />}
 
       <footer className="mt-8 text-center text-[10px] text-zinc-700">
-        ATLAS v9.10 · build p78 · 100% client-side computation · Standard ρ=-0.13 / Jackpot ρ=-0.08 · MC is a cross-check, never the primary model
+        ATLAS v9.10 · build p79 · 100% client-side computation · Standard ρ=-0.13 / Jackpot ρ=-0.08 · MC is a cross-check, never the primary model
       </footer>
     </div>
   );

@@ -78,7 +78,7 @@ export default function LearningPanel() {
   const betikaSlip = useMemo(() => parseBetikaSlip(slipText), [slipText]);
   
   const parsedBets = useMemo(() => {
-    if (sportPesaSlip && sportPesaSlip.legs.length) {
+    if (sportPesaSlip && sportPesaSlip.legs.length && !(betikaSlip && betikaSlip.events.length)) {
       return sportPesaSlip.legs.map((l) => ({
         teams: `${l.home} v ${l.away}${l.ft ? ` · FT ${l.ft}${l.ht ? ` (HT ${l.ht})` : ''}` : ''}`,
         market: toBetMarket(l.marketKey),
@@ -223,7 +223,11 @@ export default function LearningPanel() {
         <textarea value={slipText} onChange={(e) => setSlipText(e.target.value)}
           placeholder={'Paste bet history or a SportPesa slip…\nArsenal vs Chelsea\nPick: Over 2.5 (1.85) ✅'}
           className="h-24 w-full rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-300 focus:border-blue-500 focus:outline-none" />
-        {sportPesaSlip && sportPesaSlip.legs.length > 0 && (
+        {betikaSlip && betikaSlip.events.length > 0 ? (
+          <div className="mt-1 text-[10px] text-teal-400">
+            🎫 Betika {betikaSlip.header.betId || '—'} · stake {betikaSlip.header.stake || 0} · possible win {betikaSlip.header.possiblePayout || 0} · {betikaSlip.header.status || '—'} · {betikaSlip.header.tally || '—'}
+          </div>
+        ) : sportPesaSlip && sportPesaSlip.legs.length > 0 && (
           <div className="mt-1 text-[10px] text-teal-400">
             🎫 Bet {sportPesaSlip.betId || '—'} · stake {sportPesaSlip.stake || 0} · possible win {sportPesaSlip.possibleWin || 0} · {sportPesaSlip.status || '—'} · {sportPesaSlip.description || '—'}
           </div>
