@@ -15,6 +15,8 @@ import { fmtPct } from '@/lib/v9/ui/atlas-colors';
 interface ExtEdge { label: string; ev: number; odds: number; }
 interface Row { m: Match; a: AtlasAnalysis; q: FixtureQuality; ext: ExtEdge | null; }
 
+const ADV_TARGET = 0.40;
+
 export default function ScreenerPanel() {
   const matches = useAtlasStore((s) => s.matches);
   const phi = useAtlasStore((s) => s.phi);
@@ -130,6 +132,27 @@ export default function ScreenerPanel() {
   const avgEV = ticketRows.length
     ? ticketRows.reduce((s, r) => s + Math.max(r.q.maxEV, 0), 0) / ticketRows.length : 0;
 
+  // v9.8 Multi-Bet Advisor
+  const advisor = (() => {
+    if (!ticketRows.length) return null;
+    const n = ticketRows.length;
+    const sortedDesc = [...ticketRows].sort((a, b) => b.q.legProb - a.q.legProb);
+    let comb = 1;
+    const kept: Row[] = [];
+    for (const r of sortedDesc) {
+      if (kept.length >= 2 && comb * r.q.legProb < ADV_TARGET) break;
+      kept.push(r);
+      comb *= r.q.legProb;
+    }
+    const dropped = sortedDesc.slice(kept.length);
+    const geomean = Math.pow(Math.max(parlayProb, 1e-9), 1 / n);
+    const slipSize = Math.min(n, Math.max(2, Math.floor(Math.log(ADV_TARGET) / Math.log(Math.min(geomean, 0.99)))));
+    const slips = Math.ceil(n / slipSize);
+    const slipProb = Math.pow(geomean, slipSize);
+    const wipeoutSplit = Math.pow(1 - slipProb, slips);
+    return { n, sortedDesc, kept, dropped, slipSize, slips, slipProb, wipeoutSplit };
+  })();
+
   const scoreColor = (s: number) =>
     s >= 70 ? 'text-emerald-400' : s >= 55 ? 'text-yellow-400' : 'text-zinc-500';
 
@@ -196,6 +219,36 @@ export default function ScreenerPanel() {
             <div><div className="text-lg font-bold text-zinc-100">{ticketRows.length}</div><div className="text-[10px] text-zinc-500">legs selected</div></div>
             <div><div className="text-lg font-bold text-amber-300">{fmtPct(parlayProb)}</div><div className="text-[10px] text-zinc-500">combined all-hit probability</div></div>
             <div><div className={`text-lg font-bold ${avgEV > 0 ? 'text-emerald-400' : 'text-zinc-400'}`}>{avgEV > 0 ? '+' : ''}{fmtPct(avgEV)}</div><div className="text-[10px] text-zinc-500">avg best edge (standard)</div></div>
+          </div>
+        </div>
+      )}
+
+      {advisor && (
+        <div className="rounded-xl border border-fuchsia-500/25 bg-zinc-900/60 p-3">
+          <div className="mb-1 flex items-center justify-between">
+            <h3 className="text-xs font-bold text-fuchsia-300">🎯 MULTI-BET ADVISOR (target ≥40% slip-hit)</h3>
+            <span className={`text-[10px] font-bold tabular-nums ${parlayProb >= ADV_TARGET ? 'text-emerald-400' : 'text-rose-400'}`}>
+              current slip: {fmtPct(parlayProb)}
+            </span>
+          </div>
+          <div className="space-y-1 text-[11px] text-zinc-300">
+            <div className="text-zinc-400">
+              Weakest legs: {advisor.sortedDesc.slice(-3).map((r) => `${r.m.home} v ${r.m.away} (${fmtPct(r.q.legProb)})`).join(' · ')}
+            </div>
+            {advisor.dropped.length > 0 ? (
+              <div className="text-amber-300">
+                One slip ≥40% needs ≤{advisor.kept.length} legs — trim {advisor.dropped.length}: {advisor.dropped.slice(0, 3).map((r) => `${r.m.home} v ${r.m.away}`).join(', ')}{advisor.dropped.length > 3 ? '…' : ''}
+                <button onClick={() => applyTicket(advisor.kept.map((r) => r.m.id))}
+                  className="ml-2 rounded bg-amber-600 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-amber-500">
+                  ✂️ Trim
+                </button>
+              </div>
+            ) : (
+              <div className="text-emerald-400">Single slip meets the 40% target ✅</div>
+            )}
+            <div className="text-zinc-400">
+              Or split {advisor.n} legs into <b className="text-zinc-200">{advisor.slips} slip{advisor.slips > 1 ? 's' : ''} of ≤{advisor.slipSize} legs</b> (each ≈{fmtPct(advisor.slipProb)} to hit) — wipeout risk ≈{fmtPct(advisor.wipeoutSplit)} vs {fmtPct(1 - parlayProb)} for one big slip.
+            </div>
           </div>
         </div>
       )}
