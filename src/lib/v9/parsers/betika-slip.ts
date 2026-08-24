@@ -31,6 +31,8 @@ function classifyMarket(type: string, pick: string, home: string, away: string):
   const t = norm(type); const p = norm(pick);
   if (/1st half|half time/.test(t) && /total/.test(t)) return 'half_time_result';
   if (/total/.test(t)) {
+    if (norm(home).length > 3 && t.includes(norm(home))) return 'home_over25';
+    if (norm(away).length > 3 && t.includes(norm(away))) return 'away_over25';
     const ht = tok(home), at = tok(away);
     if (ht && t.includes(ht)) return 'home_over25';
     if (at && t.includes(at)) return 'away_over25';
