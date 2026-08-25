@@ -129,6 +129,54 @@ export default function LearningPanel() {
       .sort((a, b) => b.n - a.n);
   }, [marketPosteriors]);
 
+  // v9.10 weekly evidence digest
+  const digest = useMemo(() => {
+    const recent = [...feedback].slice(-20);
+    const w = recent.filter((f) => f.result === 'won').length;
+    const l = recent.filter((f) => f.result === 'lost').length;
+    const p = recent.filter((f) => f.result === 'pending').length;
+    const clvs = predictions.filter((x) => typeof x.clv === 'number').map((x) => x.clv as number);
+    const avgClv = clvs.length ? clvs.reduce((a, b) => a + b, 0) / clvs.length : 0;
+    const beat = clvs.filter((c) => c > 0).length;
+    const top = [...marketRanking].sort((a, b) => b.n - a.n).slice(0, 3);
+    return { n: recent.length, w, l, p, clvN: clvs.length, avgClv, beat, top };
+  }, [feedback, predictions, marketRanking]);
+
+  const copyDigest = () => {
+    const hit = digest.w + digest.l ? Math.round((100 * digest.w) / (digest.w + digest.l)) : 0;
+    const lines = [
+      `ATLAS EVIDENCE DIGEST — ${new Date().toLocaleDateString()}`,
+      `Bets (latest ${digest.n}): ${digest.w}W ${digest.l}L ${digest.p}P · hit ${hit}%`,
+      `CLV: avg ${(digest.avgClv * 100).toFixed(1)}% over ${digest.clvN} closes · ${digest.beat}/${digest.clvN} beat the line`,
+      `Top markets: ${digest.top.map((t) => `${t.market} ${t.pick} ${(t.mean * 100).toFixed(0)}% (n${t.n - 2})`).join(' · ')}`,
+    ];
+    navigator.clipboard.writeText(lines.join('\n'));
+  };
+
+  // v9.10 weekly evidence digest
+  const digest = useMemo(() => {
+    const recent = [...feedback].slice(-20);
+    const w = recent.filter((f) => f.result === 'won').length;
+    const l = recent.filter((f) => f.result === 'lost').length;
+    const p = recent.filter((f) => f.result === 'pending').length;
+    const clvs = predictions.filter((x) => typeof x.clv === 'number').map((x) => x.clv as number);
+    const avgClv = clvs.length ? clvs.reduce((a, b) => a + b, 0) / clvs.length : 0;
+    const beat = clvs.filter((c) => c > 0).length;
+    const top = [...marketRanking].sort((a, b) => b.n - a.n).slice(0, 3);
+    return { n: recent.length, w, l, p, clvN: clvs.length, avgClv, beat, top };
+  }, [feedback, predictions, marketRanking]);
+
+  const copyDigest = () => {
+    const hit = digest.w + digest.l ? Math.round((100 * digest.w) / (digest.w + digest.l)) : 0;
+    const lines = [
+      `ATLAS EVIDENCE DIGEST — ${new Date().toLocaleDateString()}`,
+      `Bets (latest ${digest.n}): ${digest.w}W ${digest.l}L ${digest.p}P · hit ${hit}%`,
+      `CLV: avg ${(digest.avgClv * 100).toFixed(1)}% over ${digest.clvN} closes · ${digest.beat}/${digest.clvN} beat the line`,
+      `Top markets: ${digest.top.map((t) => `${t.market} ${t.pick} ${(t.mean * 100).toFixed(0)}% (n${t.n - 2})`).join(' · ')}`,
+    ];
+    navigator.clipboard.writeText(lines.join('\n'));
+  };
+
   const totalMarketResolved = marketRanking.reduce((s, m) => s + m.n - 2, 0);
 
   const orphanFor = (label: string) => {
@@ -207,9 +255,37 @@ export default function LearningPanel() {
         </div>
       )}
 
+      <div className="rounded-xl border border-cyan-500/25 bg-zinc-900/60 p-3">
+        <div className="mb-1 flex items-center justify-between">
+          <h3 className="text-xs font-bold text-cyan-300">📊 EVIDENCE DIGEST (latest {digest.n} bets)</h3>
+          <button onClick={copyDigest}
+            className="rounded-lg border border-cyan-600 px-2 py-0.5 text-[10px] font-bold text-cyan-300 hover:bg-cyan-500/10">
+            📋 Copy digest
+          </button>
+        </div>
+        <div className="grid gap-2 text-[11px] text-zinc-300 md:grid-cols-3">
+          <div>
+            <span className="text-zinc-500">Bets:</span>{' '}
+            <span className="text-emerald-400">{digest.w}W</span>{' '}
+            <span className="text-rose-400">{digest.l}L</span>{' '}
+            <span className="text-zinc-500">{digest.p}P</span> · hit{' '}
+            {digest.w + digest.l ? Math.round((100 * digest.w) / (digest.w + digest.l)) : 0}%
+          </div>
+          <div>
+            <span className="text-zinc-500">CLV:</span> avg{' '}
+            <span className={digest.avgClv > 0 ? 'text-teal-400' : 'text-zinc-400'}>{(digest.avgClv * 100).toFixed(1)}%</span>{' '}
+            over {digest.clvN} closes · {digest.beat}/{digest.clvN} beat the line
+          </div>
+          <div>
+            <span className="text-zinc-500">Top markets:</span>{' '}
+            {digest.top.map((t) => `${t.market} ${t.pick} ${(t.mean * 100).toFixed(0)}%`).join(' · ')}
+          </div>
+        </div>
+      </div>
+
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <h3 className="text-xs font-bold text-zinc-300">BET SLIP IMPORT (23 market types + SportPesa slip table)</h3>
+          <h3 className="text-xs font-bold text-zinc-300">BET SLIP IMPORT (SportPesa + Betika + 23 market types)</h3>
           <div className="flex items-center gap-2">
             <button onClick={() => setSlipText('')} disabled={!slipText}
               className="rounded-lg border border-zinc-700 px-2 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">
