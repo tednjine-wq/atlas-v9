@@ -13,9 +13,12 @@ import type { FixtureQuality } from '@/lib/v9/analysis/screener';
 import { fmtPct } from '@/lib/v9/ui/atlas-colors';
 
 interface ExtEdge { label: string; ev: number; odds: number; }
-interface Row { m: Match; a: AtlasAnalysis; q: FixtureQuality; ext: ExtEdge | null; }
+interface Row { m: Match; a: AtlasAnalysis; q: FixtureQuality; ext: ExtEdge | null; flat: Record<string, number> | null; }
 
 const ADV_TARGET = 0.40;
+const TRUST_LOWER = 0.55;   // posterior CI lower bound must exceed this
+const TRUST_MIN_RES = 5;    // minimum resolved outcomes
+const MODEL_MIN = 0.65;     // live model prob for the outcome to auto-star
 
 export default function ScreenerPanel() {
   const matches = useAtlasStore((s) => s.matches);
@@ -23,11 +26,47 @@ export default function ScreenerPanel() {
   const standardParams = useAtlasStore((s) => s.standardParams);
   const updateMatch = useAtlasStore((s) => s.updateMatch);
   const snapshotClosing = useAtlasStore((s) => s.snapshotClosing);
+  const marketPosteriors = useAtlasStore((s) => s.marketPosteriors);
   const [text, setText] = useState('');
   const [asJackpot, setAsJackpot] = useState(false);
   const [ticket, setTicket] = useState<string[]>([]);
   const [pending, setPending] = useState<null | 'jp' | 'std'>(null);
   const [sentMsg, setSentMsg] = useState('');
+
+  // v9.10 trusted markets: CI lower > 55% with >=5 resolved
+  const trusted = useMemo(() => Object.entries(marketPosteriors)
+    .map(([key, p]) => {
+      const [market, pick] = key.split(':');
+      const n = p.alpha + p.beta;
+      const mean = p.alpha / n;
+      const se = Math.sqrt((mean * (1 - mean)) / n);
+      return { market, pick, mean, lower: mean - 1.96 * se, resolved: n - 2 };
+    })
+    .filter((t) => t.lower > TRUST_LOWER && t.resolved >= TRUST_MIN_RES),
+  [marketPosteriors]);
+
+  const flatKeyFor = (market: string, pick: string): string | null => {
+    const up = pick.toUpperCase();
+    const dir = up.includes('OVER') ? 'Over' : up.includes('UNDER') ? 'Under' : '';
+    const line = (up.match(/(\d+\.\d+)/) ?? [])[1]?.replace('.', '') ?? '';
+    if (market === 'btts_yes') return 'bttsYes';
+    if (market === 'btts_no') return 'bttsNo';
+    if (!dir || !line) return null;
+    if (/^over\d+$/.test(market)) return `over${line}`;
+    if (/^under\d+$/.test(market)) return `under${line}`;
+    if (market === 'home_over25') return `home${dir}${line}`;
+    if (market === 'away_over25') return `away${dir}${line}`;
+    return null;
+  };
+
+  const trustedFor = (flat: Record<string, number> | null) => {
+    if (!flat) return null;
+    for (const t of trusted) {
+      const fk = flatKeyFor(t.market, t.pick);
+      if (fk && (flat[fk] ?? 0) >= MODEL_MIN) return t;
+    }
+    return null;
+  };
 
   const rows = useMemo<Row[]>(() => matches
     .filter((m) => parseFloat(m.h) > 1 && parseFloat(m.d) > 1 && parseFloat(m.a) > 1)
@@ -35,7 +74,7 @@ export default function ScreenerPanel() {
       try {
         if (m.gameType === 'jackpot') {
           const a = atlasAnalyseJackpotV9(m, phi);
-          return { m, a, q: qualityJackpot(a), ext: null };
+          return { m, a, q: qualityJackpot(a), ext: null, flat: null };
         }
         const a = atlasAnalyseV9(m, phi, standardParams);
         const ext = computeExtendedMarketsV9(
@@ -50,7 +89,7 @@ export default function ScreenerPanel() {
           score: Math.min(100, base.score + (extEdge ? Math.min(15, Math.round(extEdge.ev * 200)) : 0)),
           maxEV: Math.max(base.maxEV, extEdge?.ev ?? -1),
         };
-        return { m, a, q, ext: extEdge };
+        return { m, a, q, ext: extEdge, flat: ext.flat };
       } catch { return null; }
     })
     .filter((r): r is Row => r !== null)
@@ -81,11 +120,15 @@ export default function ScreenerPanel() {
   };
   const applyTicket = (ids: string[]) => { setTicket(ids); syncStars(ids); };
 
-  // v9.10: after an import is analyzed, auto-build and star (union with existing)
+  // v9.10: after import, auto-build + auto-star trusted-market legs (union)
   useEffect(() => {
     if (!pending || !rows.length) return;
     const built = pending === 'jp' ? buildJackpotTicket(ticketShape) : buildStandardSlate(stdShape);
-    applyTicket(Array.from(new Set([...ticket, ...built])));
+    const trustedIds = rows
+      .filter((r) => r.m.gameType !== 'jackpot' && trustedFor(r.flat))
+      .map((r) => r.m.id);
+    applyTicket(Array.from(new Set([...ticket, ...built, ...trustedIds])));
+    if (trustedIds.length) setSentMsg(`🛡 ${trustedIds.length} trusted-market leg${trustedIds.length > 1 ? 's' : ''} auto-starred`);
     setPending(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, rows]);
@@ -192,6 +235,14 @@ export default function ScreenerPanel() {
         {sentMsg && <div className="mt-1 text-[10px] text-teal-400">{sentMsg}</div>}
       </div>
 
+      {trusted.length > 0 && (
+        <div className="rounded-xl border border-emerald-500/25 bg-zinc-900/60 p-2 text-[10px] text-zinc-400">
+          🛡 <b className="text-emerald-300">TRUSTED MARKETS</b> (CI lower &gt;55%, n≥5):{' '}
+          {trusted.map((t) => `${t.market} ${t.pick} ${(t.mean * 100).toFixed(0)}%`).join(' · ')}
+          <span className="text-zinc-500"> — matching legs auto-star on import (🛡 in WHY column)</span>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={() => applyTicket(buildJackpotTicket(ticketShape))}
           className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-500">
@@ -269,7 +320,7 @@ export default function ScreenerPanel() {
             </tr>
           </thead>
           <tbody>
-            {rows.slice(0, 80).map(({ m, a, q, ext }) => (
+            {rows.slice(0, 80).map(({ m, a, q, ext, flat }) => (
               <tr key={m.id} onClick={() => toggle(m.id)}
                 className={`cursor-pointer border-t border-zinc-800 hover:bg-zinc-800/30 ${ticket.includes(m.id) ? 'bg-teal-500/5' : ''}`}>
                 <td className="px-2 py-1.5">
@@ -295,7 +346,10 @@ export default function ScreenerPanel() {
                     <span className="text-zinc-600">—</span>
                   )}
                 </td>
-                <td className="px-2 py-1.5 text-[9px] text-zinc-500">{q.reasons.join(' · ')}</td>
+                <td className="px-2 py-1.5 text-[9px] text-zinc-500">
+                  {trustedFor(flat) && <span className="mr-1 text-emerald-400">🛡</span>}
+                  {q.reasons.join(' · ')}
+                </td>
               </tr>
             ))}
             {!rows.length && <tr><td colSpan={9} className="px-3 py-6 text-center text-zinc-600">No analyzable fixtures yet — paste a fixture list above.</td></tr>}
