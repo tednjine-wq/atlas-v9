@@ -1,9 +1,9 @@
 // ============================================================
-// Betika fixture parser v2 — real Betika table dialect:
-//   DATE TIME GAMEID HOME vs AWAY h d a [dc1 dc12 dcx2 ov un gg ng]
-// One row per fixture; 10 odds possible; "-" = suspended price.
-// Rows with a missing 1X2 price are skipped (engine needs all
-// three). Fallback-only: used when parseFixtureList finds 0.
+// Betika fixture parser v3 — adds Midweek Jackpot dialect:
+// date time [gameId] [Competition] HOME vs AWAY h d a, with or
+// without pipes (pipes are stripped). Game ID now optional;
+// competition is split off the home chunk at the leading
+// cup/league keyword run. Regular 10-odds rows still parse.
 // ============================================================
 export interface BetikaFixture {
   home: string; away: string; league: string; country: string;
@@ -12,27 +12,39 @@ export interface BetikaFixture {
 }
 
 const ODD = '(?:\\d+\\.\\d+|-)';
+const COMP_WORD = /cup|league|champions|conference|europa|shield|trophy|^efl$|^uefa$|^fifa$|^afc$|^caf$/i;
+
+function splitLeague(chunk: string): { league: string; home: string } {
+  const toks = chunk.split(' ').filter(Boolean);
+  let i = 0;
+  while (i < toks.length - 1 && COMP_WORD.test(toks[i])) i++;
+  if (i > 0) {
+    const home = toks.slice(i).join(' ');
+    if (home) return { league: toks.slice(0, i).join(' '), home };
+  }
+  return { league: '', home: chunk };
+}
 
 export function parseBetikaList(text: string): BetikaFixture[] {
-  const lines = text.split(/\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const lines = text.split(/\n/)
+    .map((l) => l.replace(/\|/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
   const out: BetikaFixture[] = [];
   const rowRe = new RegExp(
-    '^(\\d{2}/\\d{2}/\\d{2,4})\\s+(\\d{1,2}:\\d{2})\\s+(\\d{3,6})\\s+' +
+    '^(\\d{2}/\\d{2}/\\d{2,4})\\s+(\\d{1,2}:\\d{2})\\s+(?:(\\d{3,6})\\s+)?' +
     '(.+?)\\s+vs\\.?\\s+(.+?)\\s+' +
-    `(${ODD})(?:\\s+(${ODD}))(?:\\s+(${ODD}))(?:\\s+${ODD})*$`,
+    `(${ODD})\\s+(${ODD})\\s+(${ODD})(?:\\s+${ODD})*$`,
     'i',
   );
   for (const line of lines) {
     const m = line.match(rowRe);
     if (!m) continue;
     const [h, d, a] = [m[6], m[7], m[8]];
-    if (h === '-' || d === '-' || a === '-') continue; // suspended 1X2
+    if (h === '-' || d === '-' || a === '-') continue;
+    const { league, home } = splitLeague(m[4].trim());
     out.push({
-      home: m[4].trim(),
-      away: m[5].trim(),
-      league: '', country: '',
-      kickoff: `${m[1]} ${m[2]}`,
-      h, d, a,
+      home, away: m[5].trim(), league, country: '',
+      kickoff: `${m[1]} ${m[2]}`, h, d, a,
     });
   }
   return out;
