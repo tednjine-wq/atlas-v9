@@ -200,7 +200,7 @@ export default function ScreenerPanel() {
   const preflight = (() => {
     if (ticketRows.length < 2) return null;
     const legs = ticketRows.map((r) => {
-      const odds = r.a.pick === 'HOME' ? parseFloat(r.m.h) : r.a.pick === 'DRAW' ? parseFloat(r.m.d) : parseFloat(r.m.a);
+      const odds = r.a.pick === 'home' ? parseFloat(r.m.h) : r.a.pick === 'draw' ? parseFloat(r.m.d) : parseFloat(r.m.a);
       return { name: `${r.m.home} v ${r.m.away}`, pick: r.a.pick, odds, p: r.q.legProb };
     });
     const combOdds = legs.reduce((s, l) => s * (l.odds > 1 ? l.odds : 1), 1);
