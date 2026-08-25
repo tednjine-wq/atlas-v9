@@ -196,6 +196,20 @@ export default function ScreenerPanel() {
     return { n, sortedDesc, kept, dropped, slipSize, slips, slipProb, wipeoutSplit };
   })();
 
+  // v9.10 slip pre-flight: price vs model before staking
+  const preflight = (() => {
+    if (ticketRows.length < 2) return null;
+    const legs = ticketRows.map((r) => {
+      const odds = r.a.pick === 'HOME' ? parseFloat(r.m.h) : r.a.pick === 'DRAW' ? parseFloat(r.m.d) : parseFloat(r.m.a);
+      return { name: `${r.m.home} v ${r.m.away}`, pick: r.a.pick, odds, p: r.q.legProb };
+    });
+    const combOdds = legs.reduce((s, l) => s * (l.odds > 1 ? l.odds : 1), 1);
+    const bookImpl = legs.reduce((s, l) => s * (1 / (l.odds > 1 ? l.odds : 1)), 1);
+    const ev = parlayProb * combOdds - 1;
+    const kelly = ev > 0 && combOdds > 1 ? Math.max(0, ev / (combOdds - 1)) : 0;
+    return { legs, combOdds, bookImpl, ev, kelly, fairOdds: parlayProb > 0 ? 1 / parlayProb : 0 };
+  })();
+
   const scoreColor = (s: number) =>
     s >= 70 ? 'text-emerald-400' : s >= 55 ? 'text-yellow-400' : 'text-zinc-500';
 
@@ -304,6 +318,22 @@ export default function ScreenerPanel() {
                 Or split {advisor.n} legs into <b className="text-zinc-200">{advisor.slips} slips of ≤{advisor.slipSize} legs</b> (each ≈{fmtPct(advisor.slipProb)} to hit) — wipeout risk ≈{fmtPct(advisor.wipeoutSplit)} vs {fmtPct(1 - parlayProb)} for one big slip.
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {preflight && (
+        <div className="rounded-xl border border-blue-500/25 bg-zinc-900/60 p-3">
+          <h3 className="mb-1 text-xs font-bold text-blue-300">🧮 SLIP PRE-FLIGHT (before you stake)</h3>
+          <div className="grid grid-cols-2 gap-3 text-center md:grid-cols-5">
+            <div><div className="text-lg font-bold text-zinc-100">@{preflight.combOdds.toFixed(1)}</div><div className="text-[10px] text-zinc-500">combined book odds</div></div>
+            <div><div className="text-lg font-bold text-amber-300">{fmtPct(preflight.bookImpl)}</div><div className="text-[10px] text-zinc-500">book-implied all-hit</div></div>
+            <div><div className="text-lg font-bold text-emerald-400">{fmtPct(parlayProb)}</div><div className="text-[10px] text-zinc-500">model all-hit</div></div>
+            <div><div className={`text-lg font-bold ${preflight.ev > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{preflight.ev > 0 ? '+' : ''}{fmtPct(preflight.ev)}</div><div className="text-[10px] text-zinc-500">slip EV</div></div>
+            <div><div className="text-lg font-bold text-cyan-300">{fmtPct(Math.min(preflight.kelly, 0.02))}</div><div className="text-[10px] text-zinc-500">stake (Kelly, cap 2%)</div></div>
+          </div>
+          <div className="mt-1 text-[10px] text-zinc-500">
+            Fair odds from model: @{preflight.fairOdds.toFixed(1)} · EV &gt; 0 means the slip price beats your model · stake = min(Kelly, 2%) of bankroll.
           </div>
         </div>
       )}
