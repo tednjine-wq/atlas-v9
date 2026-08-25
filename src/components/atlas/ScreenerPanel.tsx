@@ -70,7 +70,7 @@ export default function ScreenerPanel() {
 
   const rows = useMemo<Row[]>(() => matches
     .filter((m) => parseFloat(m.h) > 1 && parseFloat(m.d) > 1 && parseFloat(m.a) > 1)
-    .map((m) => {
+    .map((m): Row | null => {
       try {
         if (m.gameType === 'jackpot') {
           const a = atlasAnalyseJackpotV9(m, phi);
