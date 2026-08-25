@@ -129,29 +129,7 @@ export default function LearningPanel() {
       .sort((a, b) => b.n - a.n);
   }, [marketPosteriors]);
 
-  // v9.10 weekly evidence digest
-  const digest = useMemo(() => {
-    const recent = [...feedback].slice(-20);
-    const w = recent.filter((f) => f.result === 'won').length;
-    const l = recent.filter((f) => f.result === 'lost').length;
-    const p = recent.filter((f) => f.result === 'pending').length;
-    const clvs = predictions.filter((x) => typeof x.clv === 'number').map((x) => x.clv as number);
-    const avgClv = clvs.length ? clvs.reduce((a, b) => a + b, 0) / clvs.length : 0;
-    const beat = clvs.filter((c) => c > 0).length;
-    const top = [...marketRanking].sort((a, b) => b.n - a.n).slice(0, 3);
-    return { n: recent.length, w, l, p, clvN: clvs.length, avgClv, beat, top };
-  }, [feedback, predictions, marketRanking]);
 
-  const copyDigest = () => {
-    const hit = digest.w + digest.l ? Math.round((100 * digest.w) / (digest.w + digest.l)) : 0;
-    const lines = [
-      `ATLAS EVIDENCE DIGEST — ${new Date().toLocaleDateString()}`,
-      `Bets (latest ${digest.n}): ${digest.w}W ${digest.l}L ${digest.p}P · hit ${hit}%`,
-      `CLV: avg ${(digest.avgClv * 100).toFixed(1)}% over ${digest.clvN} closes · ${digest.beat}/${digest.clvN} beat the line`,
-      `Top markets: ${digest.top.map((t) => `${t.market} ${t.pick} ${(t.mean * 100).toFixed(0)}% (n${t.n - 2})`).join(' · ')}`,
-    ];
-    navigator.clipboard.writeText(lines.join('\n'));
-  };
 
   // v9.10 weekly evidence digest
   const digest = useMemo(() => {
