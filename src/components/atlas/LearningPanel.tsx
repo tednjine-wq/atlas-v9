@@ -57,6 +57,25 @@ const marketLabel = (market: string, pick: string) => {
   return `${m} · ${pick}`;
 };
 
+// v9.10 part 89: honest W/L for unrecognized team-win bets
+function deriveTeamWin(label: string, market: string, pick: string, result: string) {
+  if (result !== 'pending' || market !== 'other') return null;
+  const ft = label.match(/FT\s*(\d+)\s*:\s*(\d+)/i);
+  if (!ft) return null;
+  const x = parseInt(ft[1], 10), y = parseInt(ft[2], 10);
+  const [hp, ap] = label.split('·')[0].split(' v ');
+  if (!hp || !ap) return null;
+  const nrm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const pk = nrm(pick), hm = nrm(hp), am = nrm(ap);
+  if (pk.length < 6) return null;
+  let side: 'home' | 'away' | null = null;
+  if (hm.includes(pk) || pk.includes(hm)) side = 'home';
+  else if (am.includes(pk) || pk.includes(am)) side = 'away';
+  if (!side) return null;
+  const won = side === 'home' ? x > y : y > x;
+  return { market: '1x2' as BetMarket, pick: side === 'home' ? 'Home' : 'Away', result: (won ? 'won' : 'lost') as 'won' | 'lost' };
+}
+
 export default function LearningPanel() {
   const predictions = useAtlasStore((s) => s.predictions);
   const results = useAtlasStore((s) => s.results);
@@ -74,29 +93,34 @@ export default function LearningPanel() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [closingInput, setClosingInput] = useState<Record<string, string>>({});
   const sportPesaSlip = useMemo(() => parseSportPesaSlip(slipText), [slipText]);
-
   const betikaSlip = useMemo(() => parseBetikaSlip(slipText), [slipText]);
-  
+
   const parsedBets = useMemo(() => {
-    if (sportPesaSlip && sportPesaSlip.legs.length && !(betikaSlip && betikaSlip.events.length)) {
-      return sportPesaSlip.legs.map((l) => ({
-        teams: `${l.home} v ${l.away}${l.ft ? ` · FT ${l.ft}${l.ht ? ` (HT ${l.ht})` : ''}` : ''}`,
-        market: toBetMarket(l.marketKey),
-        pick: l.pick,
-        odds: l.odds,
-        result: l.won === true ? 'won' : l.won === false ? 'lost' : 'pending',
-      })) as ReturnType<typeof parseBetSlip>;
-    }
-    if (betikaSlip && betikaSlip.events.length) {
-      return betikaSlip.events.map((e) => ({
-        teams: `${e.home} v ${e.away}${e.ft ? ` · FT ${e.ft}` : ''}`,
-        market: e.market,
-        pick: e.pick,
-        odds: e.odds,
-        result: e.result,
-      })) as ReturnType<typeof parseBetSlip>;
-    }
-    return parseBetSlip(slipText);
+    const rawBets = (() => {
+      if (sportPesaSlip && sportPesaSlip.legs.length && !(betikaSlip && betikaSlip.events.length)) {
+        return sportPesaSlip.legs.map((l) => ({
+          teams: `${l.home} v ${l.away}${l.ft ? ` · FT ${l.ft}${l.ht ? ` (HT ${l.ht})` : ''}` : ''}`,
+          market: toBetMarket(l.marketKey),
+          pick: l.pick,
+          odds: l.odds,
+          result: l.won === true ? 'won' : l.won === false ? 'lost' : 'pending',
+        })) as ReturnType<typeof parseBetSlip>;
+      }
+      if (betikaSlip && betikaSlip.events.length) {
+        return betikaSlip.events.map((e) => ({
+          teams: `${e.home} v ${e.away}${e.ft ? ` · FT ${e.ft}` : ''}`,
+          market: e.market,
+          pick: e.pick,
+          odds: e.odds,
+          result: e.result,
+        })) as ReturnType<typeof parseBetSlip>;
+      }
+      return parseBetSlip(slipText);
+    })();
+    return rawBets.map((b) => {
+      const d = deriveTeamWin(b.teams, b.market, b.pick, b.result);
+      return d ? ({ ...b, ...d } as typeof b) : b;
+    });
   }, [sportPesaSlip, betikaSlip, slipText]);
 
   const marketStats = useMemo(() => computeMarketStats(parsedBets), [parsedBets]);
@@ -111,6 +135,11 @@ export default function LearningPanel() {
       .slice(-12)
       .reverse();
   }, [predictions, predictionLabels]);
+
+  // v9.10 part 90: correction strip for mistaken taps
+  const recentlyResolved = useMemo(() =>
+    predictions.filter((p) => p.result).slice(-12).reverse(),
+  [predictions]);
 
   const [form, setForm] = useState<{
     matchLabel: string; market: BetMarket; pick: string; odds: string;
@@ -129,7 +158,7 @@ export default function LearningPanel() {
       .sort((a, b) => b.n - a.n);
   }, [marketPosteriors]);
 
-
+  const totalMarketResolved = marketRanking.reduce((s, m) => s + m.n - 2, 0);
 
   // v9.10 weekly evidence digest
   const digest = useMemo(() => {
@@ -154,8 +183,6 @@ export default function LearningPanel() {
     ];
     navigator.clipboard.writeText(lines.join('\n'));
   };
-
-  const totalMarketResolved = marketRanking.reduce((s, m) => s + m.n - 2, 0);
 
   const orphanFor = (label: string) => {
     const core = norm(label.split('·')[0]);
@@ -197,6 +224,33 @@ export default function LearningPanel() {
                   {(['home', 'draw', 'away'] as Outcome[]).map((o) => (
                     <button key={o} onClick={() => submitResult(p.matchId, o)}
                       className="rounded border border-zinc-700 px-2 py-0.5 text-[10px] font-bold text-zinc-300 hover:bg-zinc-700">
+                      {o === 'home' ? 'H' : o === 'draw' ? 'D' : 'A'}
+                    </button>
+                  ))}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {recentlyResolved.length > 0 && (
+        <div className="rounded-xl border border-amber-500/25 bg-zinc-900/60 p-3">
+          <h3 className="mb-2 text-xs font-bold text-amber-300">
+            RECENTLY RESOLVED — tap the CORRECT result to fix a mistake
+          </h3>
+          <div className="space-y-1">
+            {recentlyResolved.map((p) => (
+              <div key={p.id} className="flex items-center justify-between rounded bg-zinc-950/60 px-2 py-1 text-[11px]">
+                <span className="text-zinc-300">
+                  {predLabel(p, predictionLabels[p.matchId] ?? 'Unknown match')} ·{' '}
+                  <span className="text-zinc-500">logged: {p.result}</span>
+                </span>
+                <span className="flex gap-1">
+                  {(['home', 'draw', 'away'] as Outcome[]).map((o) => (
+                    <button key={o} onClick={() => submitResult(p.matchId, o)}
+                      className={`rounded border px-2 py-0.5 text-[10px] font-bold ${
+                        p.result === o ? 'border-emerald-500/50 text-emerald-400' : 'border-zinc-700 text-zinc-300 hover:bg-zinc-700'}`}>
                       {o === 'home' ? 'H' : o === 'draw' ? 'D' : 'A'}
                     </button>
                   ))}
@@ -275,7 +329,7 @@ export default function LearningPanel() {
           </div>
         </div>
         <textarea value={slipText} onChange={(e) => setSlipText(e.target.value)}
-          placeholder={'Paste bet history or a SportPesa slip…\nArsenal vs Chelsea\nPick: Over 2.5 (1.85) ✅'}
+          placeholder={'Paste a SportPesa or Betika slip…\nArsenal vs Chelsea\nPick: Over 2.5 (1.85) ✅'}
           className="h-24 w-full rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-xs text-zinc-300 focus:border-blue-500 focus:outline-none" />
         {betikaSlip && betikaSlip.events.length > 0 ? (
           <div className="mt-1 text-[10px] text-teal-400">
@@ -345,7 +399,19 @@ export default function LearningPanel() {
 
       {feedback.length > 0 && (
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
-          <h3 className="mb-2 text-xs font-bold text-zinc-300">BET HISTORY ({feedback.length}) — click a row to log its 1X2 result</h3>
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-xs font-bold text-zinc-300">BET HISTORY ({feedback.length}) — click a row to log its 1X2 result</h3>
+            <button
+              onClick={() => useAtlasStore.setState((s) => ({
+                feedback: s.feedback.map((fb) => {
+                  const d = deriveTeamWin(fb.matchLabel, fb.market, fb.pick, fb.result);
+                  return d ? { ...fb, market: d.market, pick: d.pick, result: d.result } : fb;
+                }),
+              }))}
+              className="rounded-lg border border-amber-600 px-2 py-0.5 text-[10px] font-bold text-amber-300 hover:bg-amber-500/10">
+              🔧 Repair pending team-win bets
+            </button>
+          </div>
           <div className="max-h-60 space-y-1 overflow-y-auto">
             {[...feedback].reverse().slice(0, 50).map((f) => {
               const ft = f.matchLabel.match(/FT\s*(\d+)\s*:\s*(\d+)/i);
@@ -369,6 +435,18 @@ export default function LearningPanel() {
                   </button>
                   {expandedId === f.id && (
                     <div className="mt-1 flex flex-wrap items-center gap-1 border-t border-zinc-800 pt-1">
+                      <span className="mr-2 flex gap-1">
+                        {(['won', 'lost', 'pending'] as const).map((r) => (
+                          <button key={r}
+                            onClick={() => useAtlasStore.setState((s) => ({
+                              feedback: s.feedback.map((x) => x.id === f.id ? { ...x, result: r } : x),
+                            }))}
+                            className={`rounded border px-2 py-0.5 text-[10px] font-bold ${
+                              f.result === r ? 'border-emerald-500/50 text-emerald-400' : 'border-zinc-700 text-zinc-300 hover:bg-zinc-700'}`}>
+                            {r === 'won' ? 'W' : r === 'lost' ? 'L' : 'P'}
+                          </button>
+                        ))}
+                      </span>
                       {linkId ? (
                         <>
                           <span className="text-[9px] text-zinc-500">LOG 1X2:</span>
