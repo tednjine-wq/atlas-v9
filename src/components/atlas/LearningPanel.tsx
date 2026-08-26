@@ -138,8 +138,17 @@ export default function LearningPanel() {
 
   // v9.10 part 90: correction strip for mistaken taps
   const recentlyResolved = useMemo(() =>
-    predictions.filter((p) => p.result).slice(-12).reverse(),
+    [...predictions.filter((p) => p.result)].reverse(),
   [predictions]);
+
+  // v9.10 part 92: force-overwrite a logged result (bypasses submitResult guard)
+  const correctResult = (matchId: string, o: Outcome) => {
+    useAtlasStore.setState((s) => ({
+      predictions: s.predictions.map((x) => x.matchId === matchId ? { ...x, result: o } : x),
+    }));
+    forceRecalibrate('standard');
+    forceRecalibrate('jackpot');
+  };
 
   const [form, setForm] = useState<{
     matchLabel: string; market: BetMarket; pick: string; odds: string;
@@ -237,9 +246,9 @@ export default function LearningPanel() {
       {recentlyResolved.length > 0 && (
         <div className="rounded-xl border border-amber-500/25 bg-zinc-900/60 p-3">
           <h3 className="mb-2 text-xs font-bold text-amber-300">
-            RECENTLY RESOLVED — tap the CORRECT result to fix a mistake
+            RECENTLY RESOLVED ({recentlyResolved.length}, newest first) — CLICK the correct result to fix a mistake
           </h3>
-          <div className="space-y-1">
+          <div className="max-h-64 space-y-1 overflow-y-auto">
             {recentlyResolved.map((p) => (
               <div key={p.id} className="flex items-center justify-between rounded bg-zinc-950/60 px-2 py-1 text-[11px]">
                 <span className="text-zinc-300">
@@ -248,7 +257,7 @@ export default function LearningPanel() {
                 </span>
                 <span className="flex gap-1">
                   {(['home', 'draw', 'away'] as Outcome[]).map((o) => (
-                    <button key={o} onClick={() => submitResult(p.matchId, o)}
+                    <button key={o} onClick={() => correctResult(p.matchId, o)}
                       className={`rounded border px-2 py-0.5 text-[10px] font-bold ${
                         p.result === o ? 'border-emerald-500/50 text-emerald-400' : 'border-zinc-700 text-zinc-300 hover:bg-zinc-700'}`}>
                       {o === 'home' ? 'H' : o === 'draw' ? 'D' : 'A'}
