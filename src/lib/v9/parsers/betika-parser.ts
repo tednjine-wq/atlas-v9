@@ -1,9 +1,10 @@
 // ============================================================
-// Betika fixture parser v3 — adds Midweek Jackpot dialect:
-// date time [gameId] [Competition] HOME vs AWAY h d a, with or
-// without pipes (pipes are stripped). Game ID now optional;
-// competition is split off the home chunk at the leading
-// cup/league keyword run. Regular 10-odds rows still parse.
+// Betika fixture parser v4 — adds the vertical WEB dialect:
+//   Soccer - <League…><dd/mm>, <hh:mm>
+//   <Home>
+//   <Away>
+//   1 <h> X <d> 2 <a>
+// plus the existing single-line table + midweek PDF dialects.
 // ============================================================
 export interface BetikaFixture {
   home: string; away: string; league: string; country: string;
@@ -23,6 +24,26 @@ function splitLeague(chunk: string): { league: string; home: string } {
     if (home) return { league: toks.slice(0, i).join(' '), home };
   }
   return { league: '', home: chunk };
+}
+
+function parseVerticalWeb(text: string): BetikaFixture[] {
+  const lines = text.split(/\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const out: BetikaFixture[] = [];
+  const webRe = /^soccer\s*-\s*(.*?)(\d{2}\/\d{2}),\s*(\d{1,2}:\d{2})$/i;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(webRe);
+    if (!m) continue;
+    const league = m[1].replace(/[.,\s…]+$/g, '').trim();
+    const home = lines[i + 1], away = lines[i + 2];
+    if (!home || !away) continue;
+    const seq = lines.slice(i + 3, i + 9);
+    if (seq[0] === '1' && seq[2] === 'X' && seq[4] === '2' &&
+        /^\d+\.\d+$/.test(seq[1] ?? '') && /^\d+\.\d+$/.test(seq[3] ?? '') && /^\d+\.\d+$/.test(seq[5] ?? '')) {
+      out.push({ home, away, league, country: '', kickoff: `${m[2]} ${m[3]}`, h: seq[1], d: seq[3], a: seq[5] });
+      i += 8;
+    }
+  }
+  return out;
 }
 
 export function parseBetikaList(text: string): BetikaFixture[] {
@@ -47,5 +68,6 @@ export function parseBetikaList(text: string): BetikaFixture[] {
       kickoff: `${m[1]} ${m[2]}`, h, d, a,
     });
   }
-  return out;
+  if (out.length) return out;
+  return parseVerticalWeb(text);
 }
