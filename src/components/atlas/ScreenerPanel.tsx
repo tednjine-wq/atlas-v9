@@ -83,7 +83,8 @@ export default function ScreenerPanel() {
     if (ev > 0.06) return 'trap';
     if (ev <= 0) return 'none';
     if (ev <= 0.03) return 'floor';
-    return r.a.margin >= 0.06 || trustedFor(r.flat) ? 'floor' : 'single';
+    const t = trustedFor(r.flat);
+    return r.a.margin >= 0.06 || (t && t.market !== '1x2') ? 'floor' : 'single';
   };
 
   const rows = useMemo<Row[]>(() => matches
@@ -150,7 +151,11 @@ export default function ScreenerPanel() {
     if (!pending || !rows.length) return;
     const built = pending === 'jp' ? buildJackpotTicket(ticketShape) : buildStandardSlate(stdShape);
     const trustedIds = rows
-      .filter((r) => r.m.gameType !== 'jackpot' && trustedFor(r.flat))
+      .filter((r) => {
+        if (r.m.gameType === 'jackpot') return false;
+        const t = trustedFor(r.flat);
+        return !!t && t.market !== '1x2'; // constitution: no raw 1X2 auto-bets
+      })
       .map((r) => r.m.id);
     applyTicket(Array.from(new Set([...ticket, ...built, ...trustedIds])));
     if (trustedIds.length) setSentMsg(`🛡 ${trustedIds.length} trusted-market leg${trustedIds.length > 1 ? 's' : ''} auto-starred`);
