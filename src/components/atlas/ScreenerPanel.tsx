@@ -207,7 +207,12 @@ export default function ScreenerPanel() {
     const bookImpl = legs.reduce((s, l) => s * (1 / (l.odds > 1 ? l.odds : 1)), 1);
     const ev = parlayProb * combOdds - 1;
     const kelly = ev > 0 && combOdds > 1 ? Math.max(0, ev / (combOdds - 1)) : 0;
-    return { legs, combOdds, bookImpl, ev, kelly, fairOdds: parlayProb > 0 ? 1 / parlayProb : 0 };
+    // v9.10 part 94: band-aware stake guard (stdlab audit: short-price stacks bleed)
+    const shortLegs = legs.filter((l) => l.odds > 1 && l.odds < 1.5).length;
+    let stake = Math.min(kelly, 0.02);
+    if (combOdds < 1.8) stake = Math.min(stake, 0.01);
+    if (shortLegs > 0) stake *= 0.5;
+    return { legs, combOdds, bookImpl, ev, kelly, shortLegs, stake, fairOdds: parlayProb > 0 ? 1 / parlayProb : 0 };
   })();
 
   const scoreColor = (s: number) =>
@@ -330,10 +335,20 @@ export default function ScreenerPanel() {
             <div><div className="text-lg font-bold text-amber-300">{fmtPct(preflight.bookImpl)}</div><div className="text-[10px] text-zinc-500">book-implied all-hit</div></div>
             <div><div className="text-lg font-bold text-emerald-400">{fmtPct(parlayProb)}</div><div className="text-[10px] text-zinc-500">model all-hit</div></div>
             <div><div className={`text-lg font-bold ${preflight.ev > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{preflight.ev > 0 ? '+' : ''}{fmtPct(preflight.ev)}</div><div className="text-[10px] text-zinc-500">slip EV</div></div>
-            <div><div className="text-lg font-bold text-cyan-300">{fmtPct(Math.min(preflight.kelly, 0.02))}</div><div className="text-[10px] text-zinc-500">stake (Kelly, cap 2%)</div></div>
+            <div><div className="text-lg font-bold text-cyan-300">{fmtPct(preflight.stake)}</div><div className="text-[10px] text-zinc-500">guarded stake</div></div>
           </div>
-          <div className="mt-1 text-[10px] text-zinc-500">
-            Fair odds from model: @{preflight.fairOdds.toFixed(1)} · EV &gt; 0 means the slip price beats your model · stake = min(Kelly, 2%) of bankroll.
+          <div className="mt-1 space-y-0.5 text-[10px] text-zinc-500">
+            <div>
+              Fair odds from model: @{preflight.fairOdds.toFixed(1)} · EV &gt; 0 means the slip price beats your model · Kelly {fmtPct(Math.min(preflight.kelly, 0.02))} → guarded {fmtPct(preflight.stake)}.
+            </div>
+            {preflight.shortLegs > 0 && (
+              <div className="text-amber-400">
+                ⚠ {preflight.shortLegs} short-price leg{preflight.shortLegs > 1 ? 's' : ''} (&lt;1.50) — margin territory: stake halved. The historical bleed lives here.
+              </div>
+            )}
+            {preflight.combOdds < 1.8 && (
+              <div className="text-amber-400">⚠ Combined odds &lt;1.80 — no-value stack: stake capped at 1%.</div>
+            )}
           </div>
         </div>
       )}
