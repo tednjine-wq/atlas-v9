@@ -103,7 +103,7 @@ export default function ScreenerPanel() {
 
   const ticketShape = rows.map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
 
-  // v9.9 divergence guard + v9.10 band rule
+  // v9.9 divergence guard + v9.10 band rule + part 97 floor policy
   const stdShape = rows
     .filter((r) => r.m.gameType !== 'jackpot')
     .filter((r) => {
@@ -111,7 +111,7 @@ export default function ScreenerPanel() {
       if (ev <= 0) return false;
       if (ev <= 0.03) return true;
       if (ev <= 0.06) return r.a.margin >= 0.06;
-      return r.a.margin >= 0.08;
+      return false; // part 97 floor policy: EV >6% flags bleed — skip
     })
     .map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
 
@@ -212,7 +212,7 @@ export default function ScreenerPanel() {
     return { n, sortedDesc, kept, dropped, slipSize, slips, slipProb, wipeoutSplit };
   })();
 
-  // v9.10 slip pre-flight: price vs model before staking
+  // v9.10 slip pre-flight: price vs model before staking (parts 94 + 97)
   const preflight = (() => {
     if (ticketRows.length < 2) return null;
     const legs = ticketRows.map((r) => {
@@ -223,12 +223,12 @@ export default function ScreenerPanel() {
     const bookImpl = legs.reduce((s, l) => s * (1 / (l.odds > 1 ? l.odds : 1)), 1);
     const ev = parlayProb * combOdds - 1;
     const kelly = ev > 0 && combOdds > 1 ? Math.max(0, ev / (combOdds - 1)) : 0;
-    // v9.10 part 94: band-aware stake guard (stdlab audit: short-price stacks bleed)
     const shortLegs = legs.filter((l) => l.odds > 1 && l.odds < 1.5).length;
+    const hiLegs = ticketRows.filter((r) => r.q.maxEV > 0.06).length;
     let stake = Math.min(kelly, 0.02);
     if (combOdds < 1.8) stake = Math.min(stake, 0.01);
     if (shortLegs > 0) stake *= 0.5;
-    return { legs, combOdds, bookImpl, ev, kelly, shortLegs, stake, fairOdds: parlayProb > 0 ? 1 / parlayProb : 0 };
+    return { legs, combOdds, bookImpl, ev, kelly, shortLegs, hiLegs, stake, fairOdds: parlayProb > 0 ? 1 / parlayProb : 0 };
   })();
 
   const scoreColor = (s: number) =>
@@ -284,7 +284,7 @@ export default function ScreenerPanel() {
           🎰 Auto-Build Jackpot Ticket (8 legs, ≤2 per league)
         </button>
         <button onClick={() => applyTicket(buildStandardSlate(stdShape))}
-          title="Band rule: EV 0-3% any venue · 3-6% margin ≥6% · >6% margin ≥8%"
+          title="Band rule: EV 0-3% any venue · 3-6% margin ≥6% · >6% skipped (floor policy)"
           className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500">
           📊 Auto-Build Standard Slate (EV-guarded)
         </button>
@@ -364,6 +364,9 @@ export default function ScreenerPanel() {
             )}
             {preflight.combOdds < 1.8 && (
               <div className="text-amber-400">⚠ Combined odds &lt;1.80 — no-value stack: stake capped at 1%.</div>
+            )}
+            {preflight.hiLegs > 0 && (
+              <div className="text-rose-400">⚠ {preflight.hiLegs} hi-band leg{preflight.hiLegs > 1 ? 's' : ''} (EV &gt;6%) — floor policy: drop from the multi or keep as a tiny single.</div>
             )}
           </div>
         </div>

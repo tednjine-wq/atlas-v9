@@ -101,8 +101,8 @@ function settleKey(key: string, i: number, j: number): boolean | null {
 // v9.10 part 96: band-aware stake for backtest flags
 // mirrors Part 94 Screener guard: hi-band halved, sub-1.50 odds halved again
 function guardedStake(ev: number, odds: number): number {
+  if (ev > 0.06) return 0;     // part 97 floor policy: hi-band skipped
   let s = 1;
-  if (ev > 0.06) s = 0.5;      // hi-band bleed guard
   if (odds < 1.5) s *= 0.5;    // short-price guard
   return s;
 }
@@ -186,6 +186,7 @@ export default function StandardLabPanel() {
                 t.flags++;
                 t.flagHits += s ? 1 : 0;
                 t.flagProfit += s ? flag.odds - 1 : -1;
+                if (gs <= 0) continue;
                 t.flagProfitGuarded += s ? (flag.odds - 1) * gs : -gs;
                 t[bkt].n++;
                 if (s) {
@@ -269,7 +270,7 @@ export default function StandardLabPanel() {
       <div className="grid grid-cols-3 gap-3">
         {bCard('EV 0–3% (full stake)', r.lo)}
         {bCard('EV 3–6% (full stake)', r.mid)}
-        {bCard('EV > 6% (halved stake)', r.hi)}
+        {bCard('EV > 6% (skipped)', r.hi)}
       </div>
     </div>
   );
