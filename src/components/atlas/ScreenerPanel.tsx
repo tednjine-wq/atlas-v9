@@ -15,10 +15,18 @@ import { fmtPct } from '@/lib/v9/ui/atlas-colors';
 interface ExtEdge { label: string; ev: number; odds: number; }
 interface Row { m: Match; a: AtlasAnalysis; q: FixtureQuality; ext: ExtEdge | null; flat: Record<string, number> | null; }
 
+type EdgeCat = 'floor' | 'single' | 'trap' | 'none';
+const CAT_META: Record<EdgeCat, { label: string; cls: string; desc: string }> = {
+  floor: { label: '🟢 FLOOR — bet', cls: 'border-emerald-500/50 text-emerald-300', desc: 'EV 0–6% or trusted market: the proven profitable band' },
+  single: { label: '🟡 SINGLES — tiny stake', cls: 'border-amber-500/50 text-amber-300', desc: 'Edge present but guard-filtered: 0.5–1% singles only' },
+  trap: { label: '🔴 TRAPS — skip', cls: 'border-rose-500/50 text-rose-300', desc: 'EV >6%: the hi-band mirage that bled −50u' },
+  none: { label: '⚪ NO EDGE', cls: 'border-zinc-600 text-zinc-400', desc: 'EV ≤0 or jackpot leg: nothing to bet' },
+};
+
 const ADV_TARGET = 0.40;
-const TRUST_LOWER = 0.55;   // posterior CI lower bound must exceed this
-const TRUST_MIN_RES = 5;    // minimum resolved outcomes
-const MODEL_MIN = 0.65;     // live model prob for the outcome to auto-star
+const TRUST_LOWER = 0.55;
+const TRUST_MIN_RES = 5;
+const MODEL_MIN = 0.65;
 
 export default function ScreenerPanel() {
   const matches = useAtlasStore((s) => s.matches);
@@ -32,8 +40,8 @@ export default function ScreenerPanel() {
   const [ticket, setTicket] = useState<string[]>([]);
   const [pending, setPending] = useState<null | 'jp' | 'std'>(null);
   const [sentMsg, setSentMsg] = useState('');
+  const [cat, setCat] = useState<'all' | EdgeCat>('all');
 
-  // v9.10 trusted markets: CI lower > 55% with >=5 resolved
   const trusted = useMemo(() => Object.entries(marketPosteriors)
     .map(([key, p]) => {
       const [market, pick] = key.split(':');
@@ -68,6 +76,16 @@ export default function ScreenerPanel() {
     return null;
   };
 
+  // v9.10 part 99: Constitution edge classifier
+  const edgeCat = (r: Row): EdgeCat => {
+    if (r.m.gameType === 'jackpot') return 'none';
+    const ev = r.q.maxEV;
+    if (ev > 0.06) return 'trap';
+    if (ev <= 0) return 'none';
+    if (ev <= 0.03) return 'floor';
+    return r.a.margin >= 0.06 || trustedFor(r.flat) ? 'floor' : 'single';
+  };
+
   const rows = useMemo<Row[]>(() => matches
     .filter((m) => parseFloat(m.h) > 1 && parseFloat(m.d) > 1 && parseFloat(m.a) > 1)
     .map((m): Row | null => {
@@ -96,6 +114,15 @@ export default function ScreenerPanel() {
     .sort((x, y) => y.q.score - x.q.score),
   [matches, phi, standardParams]);
 
+  const catCounts = useMemo(() => {
+    const c: Record<EdgeCat, number> = { floor: 0, single: 0, trap: 0, none: 0 };
+    for (const r of rows) c[edgeCat(r)]++;
+    return c;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, trusted]);
+
+  const shownRows = cat === 'all' ? rows : rows.filter((r) => edgeCat(r) === cat);
+
   const parsed = useMemo(() => {
     const p = parseFixtureList(text);
     return p.length ? p : (parseBetikaList(text) as typeof p);
@@ -103,7 +130,6 @@ export default function ScreenerPanel() {
 
   const ticketShape = rows.map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
 
-  // v9.9 divergence guard + v9.10 band rule + part 97 floor policy
   const stdShape = rows
     .filter((r) => r.m.gameType !== 'jackpot')
     .filter((r) => {
@@ -111,7 +137,7 @@ export default function ScreenerPanel() {
       if (ev <= 0) return false;
       if (ev <= 0.03) return true;
       if (ev <= 0.06) return r.a.margin >= 0.06;
-      return false; // part 97 floor policy: EV >6% flags bleed — skip
+      return false; // part 97 floor policy
     })
     .map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
 
@@ -120,7 +146,6 @@ export default function ScreenerPanel() {
   };
   const applyTicket = (ids: string[]) => { setTicket(ids); syncStars(ids); };
 
-  // v9.10: after import, auto-build + auto-star trusted-market legs (union)
   useEffect(() => {
     if (!pending || !rows.length) return;
     const built = pending === 'jp' ? buildJackpotTicket(ticketShape) : buildStandardSlate(stdShape);
@@ -152,7 +177,6 @@ export default function ScreenerPanel() {
     setText('');
   };
 
-  // v9.6 + v9.10 part 95: closing snapshot with >=3h drift gate
   const snapshot = () => {
     if (!parsed.length) return;
     const KEY = 'atlas_v9_snap_first';
@@ -191,7 +215,6 @@ export default function ScreenerPanel() {
   const avgEV = ticketRows.length
     ? ticketRows.reduce((s, r) => s + Math.max(r.q.maxEV, 0), 0) / ticketRows.length : 0;
 
-  // v9.8 Multi-Bet Advisor
   const advisor = (() => {
     if (!ticketRows.length) return null;
     const n = ticketRows.length;
@@ -212,7 +235,6 @@ export default function ScreenerPanel() {
     return { n, sortedDesc, kept, dropped, slipSize, slips, slipProb, wipeoutSplit };
   })();
 
-  // v9.10 slip pre-flight: price vs model before staking (parts 94 + 97)
   const preflight = (() => {
     if (ticketRows.length < 2) return null;
     const legs = ticketRows.map((r) => {
@@ -277,6 +299,24 @@ export default function ScreenerPanel() {
           <span className="text-zinc-500"> — matching legs auto-star on import (🛡 in WHY column)</span>
         </div>
       )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={() => setCat('all')}
+          className={`rounded-full border px-2.5 py-1 text-[10px] font-bold ${cat === 'all' ? 'border-blue-500 text-blue-300' : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'}`}>
+          ALL ({rows.length})
+        </button>
+        {(Object.keys(CAT_META) as EdgeCat[]).map((k) => (
+          <button key={k} onClick={() => setCat(cat === k ? 'all' : k)} title={CAT_META[k].desc}
+            className={`rounded-full border px-2.5 py-1 text-[10px] font-bold ${cat === k ? CAT_META[k].cls : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'}`}>
+            {CAT_META[k].label} ({catCounts[k]})
+          </button>
+        ))}
+        <button
+          onClick={() => applyTicket(Array.from(new Set([...ticket, ...rows.filter((r) => edgeCat(r) === 'floor').map((r) => r.m.id)])))}
+          className="ml-auto rounded-lg bg-emerald-600 px-2.5 py-1 text-[10px] font-bold text-white hover:bg-emerald-500">
+          ★ Star all FLOOR legs
+        </button>
+      </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={() => applyTicket(buildJackpotTicket(ticketShape))}
@@ -384,7 +424,7 @@ export default function ScreenerPanel() {
             </tr>
           </thead>
           <tbody>
-            {rows.slice(0, 80).map(({ m, a, q, ext, flat }) => (
+            {shownRows.slice(0, 80).map(({ m, a, q, ext, flat }) => (
               <tr key={m.id} onClick={() => toggle(m.id)}
                 className={`cursor-pointer border-t border-zinc-800 hover:bg-zinc-800/30 ${ticket.includes(m.id) ? 'bg-teal-500/5' : ''}`}>
                 <td className="px-2 py-1.5">
@@ -416,7 +456,7 @@ export default function ScreenerPanel() {
                 </td>
               </tr>
             ))}
-            {!rows.length && <tr><td colSpan={9} className="px-3 py-6 text-center text-zinc-600">No analyzable fixtures yet — paste a fixture list above.</td></tr>}
+            {!shownRows.length && <tr><td colSpan={9} className="px-3 py-6 text-center text-zinc-600">No matches in this category.</td></tr>}
           </tbody>
         </table>
       </div>
