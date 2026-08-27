@@ -170,9 +170,16 @@ export default function ScreenerPanel() {
         ...s.matches,
         ...parsed.map((f) => {
           const base = emptyMatch(crypto.randomUUID());
+          const userOdds: Record<string, number> = { ...base.userOdds, ...(f.userOdds ?? {}) };
+          // part 101: Betika table extras → extended-market odds
+          const extra = f as Partial<Record<'dc1X' | 'dc12' | 'dcX2' | 'over25' | 'under25' | 'bttsYes' | 'bttsNo', number>>;
+          for (const k of ['dc1X', 'dc12', 'dcX2', 'over25', 'under25', 'bttsYes', 'bttsNo'] as const) {
+            const v = extra[k];
+            if (typeof v === 'number' && v > 1) userOdds[k] = v;
+          }
           return {
             ...base, ...f,
-            userOdds: { ...base.userOdds, ...(f.userOdds ?? {}) },
+            userOdds,
             gameType: asJackpot ? ('jackpot' as const) : ('standard' as const),
           };
         }),

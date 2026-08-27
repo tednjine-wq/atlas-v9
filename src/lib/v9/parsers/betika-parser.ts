@@ -1,19 +1,26 @@
 // ============================================================
-// Betika fixture parser v4 — adds the vertical WEB dialect:
-//   Soccer - <League…><dd/mm>, <hh:mm>
-//   <Home>
-//   <Away>
-//   1 <h> X <d> 2 <a>
-// plus the existing single-line table + midweek PDF dialects.
+// Betika fixture parser v5 — table rows now carry the extra
+// market columns when present (DC 1X/12/X2, O/U 2.5, GG/NG),
+// feeding userOdds so extended markets show real odds + EV.
+// Dialects: single-line table (pipes optional, game id and
+// competition optional), midweek PDF, vertical web copy.
 // ============================================================
 export interface BetikaFixture {
   home: string; away: string; league: string; country: string;
   kickoff: string; h: string; d: string; a: string;
   userOdds?: Record<string, number>;
+  dc1X?: number; dc12?: number; dcX2?: number;
+  over25?: number; under25?: number; bttsYes?: number; bttsNo?: number;
 }
 
 const ODD = '(?:\\d+\\.\\d+|-)';
 const COMP_WORD = /cup|league|champions|conference|europa|shield|trophy|^efl$|^uefa$|^fifa$|^afc$|^caf$/i;
+
+const num = (s?: string) => {
+  if (!s || s === '-') return undefined;
+  const v = parseFloat(s);
+  return v > 1 ? v : undefined;
+};
 
 function splitLeague(chunk: string): { league: string; home: string } {
   const toks = chunk.split(' ').filter(Boolean);
@@ -54,7 +61,9 @@ export function parseBetikaList(text: string): BetikaFixture[] {
   const rowRe = new RegExp(
     '^(\\d{2}/\\d{2}/\\d{2,4})\\s+(\\d{1,2}:\\d{2})\\s+(?:(\\d{3,6})\\s+)?' +
     '(.+?)\\s+vs\\.?\\s+(.+?)\\s+' +
-    `(${ODD})\\s+(${ODD})\\s+(${ODD})(?:\\s+${ODD})*$`,
+    `(${ODD})\\s+(${ODD})\\s+(${ODD})` +
+    `(?:\\s+(${ODD})\\s+(${ODD})\\s+(${ODD})\\s+(${ODD})\\s+(${ODD})\\s+(${ODD})\\s+(${ODD}))?` +
+    '\\s*$',
     'i',
   );
   for (const line of lines) {
@@ -66,6 +75,8 @@ export function parseBetikaList(text: string): BetikaFixture[] {
     out.push({
       home, away: m[5].trim(), league, country: '',
       kickoff: `${m[1]} ${m[2]}`, h, d, a,
+      dc1X: num(m[9]), dc12: num(m[10]), dcX2: num(m[11]),
+      over25: num(m[12]), under25: num(m[13]), bttsYes: num(m[14]), bttsNo: num(m[15]),
     });
   }
   if (out.length) return out;
