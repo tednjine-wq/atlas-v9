@@ -152,11 +152,27 @@ export default function ScreenerPanel() {
     setText('');
   };
 
-  // v9.6: closing-odds snapshot — safe re-paste, no duplicates
+  // v9.6 + v9.10 part 95: closing snapshot with >=3h drift gate
   const snapshot = () => {
     if (!parsed.length) return;
-    const n = snapshotClosing(parsed);
-    setSentMsg(`📸 Closing odds captured for ${n} prediction${n === 1 ? '' : 's'} — CLV auto-computed`);
+    const KEY = 'atlas_v9_snap_first';
+    let first: Record<string, number> = {};
+    try { first = JSON.parse(localStorage.getItem(KEY) ?? '{}'); } catch { first = {}; }
+    const now = Date.now();
+    const normKey = (h: string, a: string) => (h + ' ' + a).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const eligible = parsed.filter((f) => {
+      const k = normKey(f.home, f.away);
+      if (!first[k]) { first[k] = now; return false; }
+      return now - first[k] >= 3 * 3600 * 1000;
+    });
+    localStorage.setItem(KEY, JSON.stringify(first));
+    if (!eligible.length) {
+      setSentMsg('⏳ Too early — closing odds only update ≥3h after first snapshot (real drift only).');
+      setText('');
+      return;
+    }
+    const n = snapshotClosing(eligible);
+    setSentMsg(`📸 Closing odds captured for ${n} prediction${n === 1 ? '' : 's'} — CLV from ≥3h drift`);
     setText('');
   };
 
