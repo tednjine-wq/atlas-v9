@@ -38,9 +38,46 @@ const merge = (a: Report, r: Report): Report => ({
   hi: { n: a.hi.n + r.hi.n, hits: a.hi.hits + r.hi.hits, profit: a.hi.profit + r.hi.profit, guardedProfit: a.hi.guardedProfit + r.hi.guardedProfit },
 });
 
+const fixBucket = (b?: Partial<Bucket>): Bucket => ({
+  n: b?.n ?? 0,
+  hits: b?.hits ?? 0,
+  profit: b?.profit ?? 0,
+  guardedProfit: b?.guardedProfit ?? 0,
+});
+
+const fixReport = (r?: Partial<Report>): Report => ({
+  total: r?.total ?? 0,
+  analyzed: r?.analyzed ?? 0,
+  pickHits: r?.pickHits ?? 0,
+  pickProfit: r?.pickProfit ?? 0,
+  brier: r?.brier ?? 0,
+  flags: r?.flags ?? 0,
+  flagHits: r?.flagHits ?? 0,
+  flagProfit: r?.flagProfit ?? 0,
+  flagProfitGuarded: r?.flagProfitGuarded ?? 0,
+  lo: fixBucket(r?.lo),
+  mid: fixBucket(r?.mid),
+  hi: fixBucket(r?.hi),
+});
+
 const loadAgg = (): AggState | null => {
-  try { const s = localStorage.getItem(LS_KEY); return s ? (JSON.parse(s) as AggState) : null; }
-  catch { return null; }
+  try {
+    const s = localStorage.getItem(LS_KEY);
+    if (!s) return null;
+    const raw = JSON.parse(s) as Partial<AggState>;
+    const leagues: Record<string, Report> = {};
+    for (const [k, v] of Object.entries(raw.leagues ?? {})) {
+      leagues[k] = fixReport(v);
+    }
+    return {
+      files: raw.files ?? 0,
+      names: raw.names ?? [],
+      overall: fixReport(raw.overall),
+      leagues,
+    };
+  } catch {
+    return null;
+  }
 };
 
 function settleKey(key: string, i: number, j: number): boolean | null {
