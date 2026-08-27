@@ -125,8 +125,10 @@ export default function ScreenerPanel() {
   const shownRows = cat === 'all' ? rows : rows.filter((r) => edgeCat(r) === cat);
 
   const parsed = useMemo(() => {
-    const p = parseFixtureList(text);
-    return p.length ? p : (parseBetikaList(text) as typeof p);
+    // part 102: Betika first — it carries the extra market columns;
+    // the generic parser only handles date-less SportPesa pastes
+    const p = parseBetikaList(text);
+    return p.length ? (p as ReturnType<typeof parseFixtureList>) : parseFixtureList(text);
   }, [text]);
 
   const ticketShape = rows.map((r) => ({ id: r.m.id, league: r.m.league, q: r.q }));
