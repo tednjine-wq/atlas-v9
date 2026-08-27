@@ -100,7 +100,12 @@ export default function ScreenerPanel() {
           a.scoreMatrix, a.calibration.lambdaH, a.calibration.lambdaA,
           DC_RHO_STANDARD, m.userOdds,
         );
-        const best = ext.topEvBets.length ? ext.topEvBets[0] : null;
+        // part 103: only core markets drive EV/category — HT/exact/AH spots are model noise
+        const CORE_KEY = (k: string) =>
+          /^(over|under)\d+$/.test(k) || /^btts(Yes|No)$/.test(k) ||
+          /^dc(1X|X2|12)$/.test(k) || /^(home|away)(Over|Under)\d+$/.test(k);
+        const coreBets = ext.topEvBets.filter((b) => CORE_KEY(b.key));
+        const best = coreBets.length ? coreBets[0] : null;
         const extEdge = best && best.ev > 0 ? { label: best.label, ev: best.ev, odds: best.odds } : null;
         const base = qualityStandard(a);
         const q: FixtureQuality = {
