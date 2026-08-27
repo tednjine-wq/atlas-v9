@@ -6,12 +6,12 @@ import { DC_RHO_STANDARD, EMPTY_USER_ODDS } from '@/lib/v9/atlas-types';
 import type { Match, Outcome } from '@/lib/v9/atlas-types';
 import { fmtPct } from '@/lib/v9/ui/atlas-colors';
 
-interface Bucket { n: number; hits: number; profit: number; }
+interface Bucket { n: number; hits: number; profit: number; guardedProfit: number; }
 interface Report {
   total: number; analyzed: number;
   pickHits: number; pickProfit: number;
   brier: number;
-  flags: number; flagHits: number; flagProfit: number;
+  flags: number; flagHits: number; flagProfit: number; flagProfitGuarded: number;
   lo: Bucket; mid: Bucket; hi: Bucket;
 }
 interface AggState { files: number; names: string[]; overall: Report; leagues: Record<string, Report>; }
@@ -20,18 +20,22 @@ const LS_KEY = 'atlas_v9_stdlab_agg';
 
 const blank = (): Report => ({
   total: 0, analyzed: 0, pickHits: 0, pickProfit: 0, brier: 0,
-  flags: 0, flagHits: 0, flagProfit: 0,
-  lo: { n: 0, hits: 0, profit: 0 }, mid: { n: 0, hits: 0, profit: 0 }, hi: { n: 0, hits: 0, profit: 0 },
+  flags: 0, flagHits: 0, flagProfit: 0, flagProfitGuarded: 0,
+  lo: { n: 0, hits: 0, profit: 0, guardedProfit: 0 },
+  mid: { n: 0, hits: 0, profit: 0, guardedProfit: 0 },
+  hi: { n: 0, hits: 0, profit: 0, guardedProfit: 0 },
 });
 
 const merge = (a: Report, r: Report): Report => ({
   total: a.total + r.total, analyzed: a.analyzed + r.analyzed,
   pickHits: a.pickHits + r.pickHits, pickProfit: a.pickProfit + r.pickProfit,
   brier: a.brier + r.brier,
-  flags: a.flags + r.flags, flagHits: a.flagHits + r.flagHits, flagProfit: a.flagProfit + r.flagProfit,
-  lo: { n: a.lo.n + r.lo.n, hits: a.lo.hits + r.lo.hits, profit: a.lo.profit + r.lo.profit },
-  mid: { n: a.mid.n + r.mid.n, hits: a.mid.hits + r.mid.hits, profit: a.mid.profit + r.mid.profit },
-  hi: { n: a.hi.n + r.hi.n, hits: a.hi.hits + r.hi.hits, profit: a.hi.profit + r.hi.profit },
+  flags: a.flags + r.flags, flagHits: a.flagHits + r.flagHits,
+  flagProfit: a.flagProfit + r.flagProfit,
+  flagProfitGuarded: a.flagProfitGuarded + r.flagProfitGuarded,
+  lo: { n: a.lo.n + r.lo.n, hits: a.lo.hits + r.lo.hits, profit: a.lo.profit + r.lo.profit, guardedProfit: a.lo.guardedProfit + r.lo.guardedProfit },
+  mid: { n: a.mid.n + r.mid.n, hits: a.mid.hits + r.mid.hits, profit: a.mid.profit + r.mid.profit, guardedProfit: a.mid.guardedProfit + r.mid.guardedProfit },
+  hi: { n: a.hi.n + r.hi.n, hits: a.hi.hits + r.hi.hits, profit: a.hi.profit + r.hi.profit, guardedProfit: a.hi.guardedProfit + r.hi.guardedProfit },
 });
 
 const loadAgg = (): AggState | null => {
@@ -39,7 +43,6 @@ const loadAgg = (): AggState | null => {
   catch { return null; }
 };
 
-// key suffixes are tenths ("25" = 2.5)
 function settleKey(key: string, i: number, j: number): boolean | null {
   let m = key.match(/^over(\d+)$/); if (m) return i + j > +m[1] / 10;
   m = key.match(/^under(\d+)$/); if (m) return i + j < +m[1] / 10;
@@ -56,6 +59,15 @@ function settleKey(key: string, i: number, j: number): boolean | null {
   if (key === 'group6p') return i + j >= 6;
   m = key.match(/^cs_(\d)_(\d)$/); if (m) return i === +m[1] && j === +m[2];
   return null;
+}
+
+// v9.10 part 96: band-aware stake for backtest flags
+// mirrors Part 94 Screener guard: hi-band halved, sub-1.50 odds halved again
+function guardedStake(ev: number, odds: number): number {
+  let s = 1;
+  if (ev > 0.06) s = 0.5;      // hi-band bleed guard
+  if (odds < 1.5) s *= 0.5;    // short-price guard
+  return s;
 }
 
 export default function StandardLabPanel() {
@@ -87,7 +99,7 @@ export default function StandardLabPanel() {
     const leagues: Record<string, Report> = {};
 
     const rows = lines.slice(1);
-    for (let b = 0; b < rows.length; b += 25) {           // Rule 10.3 batching
+    for (let b = 0; b < rows.length; b += 25) {
       for (const line of rows.slice(b, b + 25)) {
         const c = line.split(',');
         rep.total++;
@@ -131,13 +143,22 @@ export default function StandardLabPanel() {
           if (flag && flag.odds > 1) {
             const s = settleKey(flag.key, hg, ag);
             if (s !== null) {
+              const gs = guardedStake(flag.ev, flag.odds);
+              const bkt: 'lo' | 'mid' | 'hi' = flag.ev > 0.06 ? 'hi' : flag.ev > 0.03 ? 'mid' : 'lo';
               for (const t of [rep, lg]) {
                 t.flags++;
                 t.flagHits += s ? 1 : 0;
                 t.flagProfit += s ? flag.odds - 1 : -1;
-                const bkt = flag.ev > 0.06 ? t.hi : flag.ev > 0.03 ? t.mid : t.lo;
-                bkt.n++;
-                if (s) { bkt.hits++; bkt.profit += flag.odds - 1; } else bkt.profit -= 1;
+                t.flagProfitGuarded += s ? (flag.odds - 1) * gs : -gs;
+                t[bkt].n++;
+                if (s) {
+                  t[bkt].hits++;
+                  t[bkt].profit += flag.odds - 1;
+                  t[bkt].guardedProfit += (flag.odds - 1) * gs;
+                } else {
+                  t[bkt].profit -= 1;
+                  t[bkt].guardedProfit -= gs;
+                }
               }
             }
           }
@@ -181,7 +202,10 @@ export default function StandardLabPanel() {
       <div className="text-[10px] text-zinc-500">{t}</div>
       <div className="text-sm font-bold tabular-nums text-zinc-200">{b.n ? fmtPct(b.hits / b.n) : '—'}</div>
       <div className={`text-xs font-bold tabular-nums ${b.profit > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-        {b.profit >= 0 ? '+' : ''}{b.profit.toFixed(1)}u
+        raw: {b.profit >= 0 ? '+' : ''}{b.profit.toFixed(1)}u
+      </div>
+      <div className={`text-xs font-bold tabular-nums ${b.guardedProfit > 0 ? 'text-emerald-300' : 'text-zinc-400'}`}>
+        guarded: {b.guardedProfit >= 0 ? '+' : ''}{b.guardedProfit.toFixed(1)}u
       </div>
       <div className="text-[9px] text-zinc-600">{b.n} bets</div>
     </div>
@@ -195,16 +219,25 @@ export default function StandardLabPanel() {
         {card((r.analyzed ? r.brier / r.analyzed : 0).toFixed(3), 'Brier (baseline 0.667)')}
         {card(`${r.flags}`, 'extended +EV flags', 'text-amber-400')}
         {card(r.flags ? fmtPct(r.flagHits / r.flags) : '—', 'flag hit rate', 'text-amber-400')}
-        {card(`${r.flagProfit >= 0 ? '+' : ''}${r.flagProfit.toFixed(1)}u`,
-          'flag P/L (flat 1u)', r.flagProfit > 0 ? 'text-emerald-400' : 'text-rose-400')}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
+          <div className="text-[9px] text-zinc-500">flag P/L (flat 1u)</div>
+          <div className={`text-sm font-bold tabular-nums ${r.flagProfit > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+            {r.flagProfit >= 0 ? '+' : ''}{r.flagProfit.toFixed(1)}u
+          </div>
+          <div className={`text-[10px] font-bold tabular-nums ${r.flagProfitGuarded > 0 ? 'text-emerald-300' : 'text-zinc-400'}`}>
+            guarded: {r.flagProfitGuarded >= 0 ? '+' : ''}{r.flagProfitGuarded.toFixed(1)}u
+          </div>
+        </div>
       </div>
       <div className="grid grid-cols-3 gap-3">
-        {bCard('EV 0–3%', r.lo)}
-        {bCard('EV 3–6%', r.mid)}
-        {bCard('EV > 6%', r.hi)}
+        {bCard('EV 0–3% (full stake)', r.lo)}
+        {bCard('EV 3–6% (full stake)', r.mid)}
+        {bCard('EV > 6% (halved stake)', r.hi)}
       </div>
     </div>
   );
+
+  const guardDelta = agg ? agg.overall.flagProfitGuarded - agg.overall.flagProfit : 0;
 
   return (
     <div className="space-y-4">
@@ -244,6 +277,39 @@ export default function StandardLabPanel() {
         <>
           {block(`Cumulative — ${agg.files} file${agg.files > 1 ? 's' : ''}`, agg.overall)}
 
+          <div className="rounded-xl border border-fuchsia-500/25 bg-zinc-900/60 p-3">
+            <h4 className="mb-1 text-[10px] font-bold uppercase text-fuchsia-300">🛡 Band-aware stake guard impact (Part 94 applied)</h4>
+            <div className="grid grid-cols-2 gap-4 text-[11px] text-zinc-300 md:grid-cols-4">
+              <div>
+                <div className="text-zinc-500">Raw flat P/L</div>
+                <div className={`text-sm font-bold tabular-nums ${agg.overall.flagProfit > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {agg.overall.flagProfit >= 0 ? '+' : ''}{agg.overall.flagProfit.toFixed(1)}u
+                </div>
+              </div>
+              <div>
+                <div className="text-zinc-500">Guarded P/L</div>
+                <div className={`text-sm font-bold tabular-nums ${agg.overall.flagProfitGuarded > 0 ? 'text-emerald-300' : 'text-zinc-400'}`}>
+                  {agg.overall.flagProfitGuarded >= 0 ? '+' : ''}{agg.overall.flagProfitGuarded.toFixed(1)}u
+                </div>
+              </div>
+              <div>
+                <div className="text-zinc-500">Guard delta</div>
+                <div className={`text-sm font-bold tabular-nums ${guardDelta > 0 ? 'text-emerald-300' : 'text-zinc-400'}`}>
+                  {guardDelta >= 0 ? '+' : ''}{guardDelta.toFixed(1)}u
+                </div>
+              </div>
+              <div>
+                <div className="text-zinc-500">hi-band bleed</div>
+                <div className={`text-sm font-bold tabular-nums ${agg.overall.hi.profit > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  raw: {agg.overall.hi.profit.toFixed(1)}u → guarded: {agg.overall.hi.guardedProfit.toFixed(1)}u
+                </div>
+              </div>
+            </div>
+            <div className="mt-1 text-[9px] text-zinc-500">
+              hi-band (EV &gt;6%): stake halved · any flag &lt;1.50 odds: halved again · lo/mid: full stake. A successful guard shrinks hi-band bleed without touching lo/mid profit.
+            </div>
+          </div>
+
           <div className="overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-900/60">
             <table className="w-full text-xs">
               <thead>
@@ -254,7 +320,8 @@ export default function StandardLabPanel() {
                   <th className="px-3 py-2">Brier</th>
                   <th className="px-3 py-2">Flags</th>
                   <th className="px-3 py-2">Flag hit</th>
-                  <th className="px-3 py-2">Flag P/L</th>
+                  <th className="px-3 py-2">Raw P/L</th>
+                  <th className="px-3 py-2">Guarded P/L</th>
                   <th className="px-3 py-2">0–3%</th>
                   <th className="px-3 py-2">3–6%</th>
                   <th className="px-3 py-2">&gt;6%</th>
@@ -272,14 +339,17 @@ export default function StandardLabPanel() {
                     <td className={`px-3 py-2 tabular-nums font-bold ${r.flagProfit > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {r.flagProfit >= 0 ? '+' : ''}{r.flagProfit.toFixed(1)}u
                     </td>
-                    <td className={`px-3 py-2 tabular-nums ${r.lo.profit > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {r.lo.profit >= 0 ? '+' : ''}{r.lo.profit.toFixed(1)}
+                    <td className={`px-3 py-2 tabular-nums font-bold ${r.flagProfitGuarded > 0 ? 'text-emerald-300' : 'text-zinc-400'}`}>
+                      {r.flagProfitGuarded >= 0 ? '+' : ''}{r.flagProfitGuarded.toFixed(1)}u
                     </td>
-                    <td className={`px-3 py-2 tabular-nums ${r.mid.profit > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {r.mid.profit >= 0 ? '+' : ''}{r.mid.profit.toFixed(1)}
+                    <td className={`px-3 py-2 tabular-nums ${r.lo.guardedProfit > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {r.lo.guardedProfit >= 0 ? '+' : ''}{r.lo.guardedProfit.toFixed(1)}
                     </td>
-                    <td className={`px-3 py-2 tabular-nums ${r.hi.profit > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {r.hi.profit >= 0 ? '+' : ''}{r.hi.profit.toFixed(1)}
+                    <td className={`px-3 py-2 tabular-nums ${r.mid.guardedProfit > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {r.mid.guardedProfit >= 0 ? '+' : ''}{r.mid.guardedProfit.toFixed(1)}
+                    </td>
+                    <td className={`px-3 py-2 tabular-nums ${r.hi.guardedProfit > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {r.hi.guardedProfit >= 0 ? '+' : ''}{r.hi.guardedProfit.toFixed(1)}
                     </td>
                   </tr>
                 ))}
