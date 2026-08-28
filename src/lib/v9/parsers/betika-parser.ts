@@ -1,9 +1,9 @@
 // ============================================================
-// Betika fixture parser v5 — table rows now carry the extra
-// market columns when present (DC 1X/12/X2, O/U 2.5, GG/NG),
-// feeding userOdds so extended markets show real odds + EV.
-// Dialects: single-line table (pipes optional, game id and
-// competition optional), midweek PDF, vertical web copy.
+// Betika fixture parser v6 — adds the pipe-vertical PDF dialect
+// (date / time / competition / match / h / d / a on separate
+// lines), on top of: single-line table (pipes optional, game id
+// + competition optional, extra DC/OU2.5/BTTS columns), midweek
+// single-line, and vertical web copy.
 // ============================================================
 export interface BetikaFixture {
   home: string; away: string; league: string; country: string;
@@ -31,6 +31,29 @@ function splitLeague(chunk: string): { league: string; home: string } {
     if (home) return { league: toks.slice(0, i).join(' '), home };
   }
   return { league: '', home: chunk };
+}
+
+function parsePipeVertical(text: string): BetikaFixture[] {
+  const toks = text.split(/\n/)
+    .map((l) => l.replace(/\|/g, ' ').trim())
+    .filter((l) => l.length > 0);
+  const isDate = (s?: string) => !!s && /^\d{2}\/\d{2}\/\d{2,4}$/.test(s);
+  const isTime = (s?: string) => !!s && /^\d{1,2}:\d{2}$/.test(s);
+  const isOdd = (s?: string) => !!s && /^\d+\.\d+$/.test(s);
+  const out: BetikaFixture[] = [];
+  for (let i = 0; i + 6 < toks.length; i++) {
+    if (!isDate(toks[i])) continue;
+    const t = toks[i + 1], comp = toks[i + 2], match = toks[i + 3];
+    const h = toks[i + 4], d = toks[i + 5], a = toks[i + 6];
+    if (!isTime(t) || !match || !/\s+vs\.?\s+/i.test(match) || !isOdd(h) || !isOdd(d) || !isOdd(a)) continue;
+    const [home, away] = match.split(/\s+vs\.?\s+/i);
+    out.push({
+      home: home.trim(), away: away.trim(), league: (comp ?? '').trim(), country: '',
+      kickoff: `${toks[i]} ${t}`, h, d, a,
+    });
+    i += 6;
+  }
+  return out;
 }
 
 function parseVerticalWeb(text: string): BetikaFixture[] {
@@ -80,5 +103,7 @@ export function parseBetikaList(text: string): BetikaFixture[] {
     });
   }
   if (out.length) return out;
+  const pipe = parsePipeVertical(text);
+  if (pipe.length) return pipe;
   return parseVerticalWeb(text);
 }
