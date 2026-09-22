@@ -41,6 +41,7 @@ export default function ScreenerPanel() {
   const [pending, setPending] = useState<null | 'jp' | 'std'>(null);
   const [sentMsg, setSentMsg] = useState('');
   const [cat, setCat] = useState<'all' | EdgeCat>('all');
+  const [overlayText, setOverlayText] = useState('');
 
   const trusted = useMemo(() => Object.entries(marketPosteriors)
     .map(([key, p]) => {
@@ -128,6 +129,29 @@ export default function ScreenerPanel() {
   }, [rows, trusted]);
 
   const shownRows = cat === 'all' ? rows : rows.filter((r) => edgeCat(r) === cat);
+
+  // part 107: merge deep-scraped market odds onto existing matches
+  const mergeOverlay = () => {
+    const nm2 = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    let n = 0;
+    for (const line of overlayText.split(/\n/)) {
+      const parts = line.split('|').map((p) => p.trim()).filter(Boolean);
+      if (parts.length < 2) continue;
+      const hdr = parts[0].match(/^(.+?)\s+vs\.?\s+(.+)$/i);
+      if (!hdr) continue;
+      const key = nm2(hdr[1]) + ' ' + nm2(hdr[2]);
+      const target = matches.find((m) => nm2(m.home) + ' ' + nm2(m.away) === key);
+      if (!target) continue;
+      const add: Record<string, number> = {};
+      for (const p of parts.slice(1)) {
+        const kv = p.match(/^([a-zA-Z0-9]+)\s+(\d+\.\d+)$/);
+        if (kv) add[kv[1]] = parseFloat(kv[2]);
+      }
+      if (Object.keys(add).length) { updateMatch(target.id, { userOdds: { ...target.userOdds, ...add } }); n++; }
+    }
+    setSentMsg(`🧩 Overlay merged onto ${n} match${n === 1 ? '' : 'es'}`);
+    setOverlayText('');
+  };
 
   const parsed = useMemo(() => {
     // part 102: Betika first — it carries the extra market columns;
@@ -309,6 +333,18 @@ export default function ScreenerPanel() {
           First paste = import & auto-build. Pre-kickoff re-paste = 📸 closing snapshot (no duplicates, CLV auto). Click rows to curate, ➕ Send to push picks to Matches.
         </div>
         {sentMsg && <div className="mt-1 text-[10px] text-teal-400">{sentMsg}</div>}
+      </div>
+
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+        <div className="mb-1 flex items-center justify-between">
+          <h3 className="text-xs font-bold text-zinc-300">🧩 DEEP-MARKETS OVERLAY (paste tools/deep.mjs output)</h3>
+          <button onClick={mergeOverlay} className="rounded-lg bg-indigo-600 px-2.5 py-1 text-[10px] font-bold text-white hover:bg-indigo-500">
+            Merge odds overlay
+          </button>
+        </div>
+        <textarea value={overlayText} onChange={(e) => setOverlayText(e.target.value)}
+          placeholder={'Fc Sevastopol vs Fc Rubin Yalta | over15 1.30 | under15 3.00 | bttsYes 1.71'}
+          className="h-16 w-full rounded-lg border border-zinc-700 bg-zinc-950 p-2 font-mono text-[10px] text-zinc-300 focus:border-indigo-500 focus:outline-none" />
       </div>
 
       {trusted.length > 0 && (

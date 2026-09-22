@@ -1,4 +1,4 @@
-// tools/scraper.mjs — v3: state-machine parser (layout-agnostic) + smarter wait + tab arg
+// tools/scraper.mjs — v5: + Betika Prematch 3-bare-odds vertical layout + auto-load-more
 import { chromium } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { execSync } from 'node:child_process';
@@ -9,19 +9,36 @@ const TAB = process.argv[4] ?? '';
 const headless = process.env.HEADLESS !== '0';
 
 const browser = await chromium.launch({ headless });
-const page = await browser.newPage();
-await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
-await page.waitForFunction(() => /\d\.\d{2}/.test(document.body.innerText), { timeout: 25000 }).catch(() => {});
-await page.waitForTimeout(3000);
+let active = await browser.newPage();
+await active.goto(URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
+await active.waitForFunction(() => /\d\.\d{2}/.test(document.body.innerText), { timeout: 25000 }).catch(() => {});
+await active.waitForTimeout(3000);
+
 if (TAB) {
-  const tab = page.locator(`text="${TAB}"`).first();
-  if (await tab.count().catch(() => 0)) { await tab.click().catch(() => {}); await page.waitForTimeout(3000); }
+  const tab = active.locator(`text="${TAB}"`).first();
+  if (await tab.count().catch(() => 0)) {
+    const popupP = active.context().waitForEvent('page', { timeout: 8000 }).catch(() => null);
+    await tab.click().catch(() => {});
+    const popup = await popupP;
+    if (popup) {
+      await popup.waitForLoadState('domcontentloaded').catch(() => {});
+      await popup.waitForFunction(() => /\d\.\d{2}/.test(document.body.innerText), { timeout: 25000 }).catch(() => {});
+      await popup.waitForTimeout(2500);
+      active = popup;
+    } else await active.waitForTimeout(2500);
+  }
 }
-for (let i = 0; i < 3; i++) {
-  const btn = page.locator('button:has-text("Load More"), button:has-text("Show More")').first();
-  if (await btn.count().catch(() => 0) && await btn.isVisible().catch(() => false)) { await btn.click(); await page.waitForTimeout(1500); } else break;
+
+// Aggressively click "Load more" to get the full board
+for (let i = 0; i < 10; i++) {
+  const btn = active.locator('button:has-text("Load more"), button:has-text("Show More")').first();
+  if (await btn.count().catch(() => 0) && await btn.isVisible().catch(() => false)) { 
+    await btn.click().catch(() => {}); 
+    await active.waitForTimeout(1500); 
+  } else break;
 }
-const text = await page.evaluate(() => document.body.innerText);
+
+const text = await active.evaluate(() => document.body.innerText);
 await browser.close();
 
 mkdirSync('tools/scrapes', { recursive: true });
@@ -31,18 +48,47 @@ writeFileSync(`tools/scrapes/${SITE}-${stamp}.raw.txt`, text);
 const lines = text.split(/\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
 const isOdd = (s) => /^\d+\.\d+$/.test(s ?? '');
 const oddsTok = (s) => isOdd(s) || s === '-';
-const clean = (s) => (s ?? '').replace(/Apply Pass|Auto Pick|Clear All|New/gi, '').trim();
-const NAV = /^(login|register|home$|live|jackpots$|shikisha|aviator|ligi|casino|promotions|virtuals|crash|live score|app$|print matches|search|back to top|learn more|terms|privacy|responsible|play$|sports$|contact|telephone|email|office|license|18\+|©|mpesa|paybill|shops|call customer|preferences|customise|display|data saver|get help|legal|download|must be won$|midweek|sababisha|results$|game pass|token|stake|combinations|picked|place bet|deposit|notifications|my bets|profile)/i;
-const skip = (s) => !s || NAV.test(s) || isOdd(s) || s === '-' || /^[1X2]$/i.test(s) || /^\d{1,2}:\d{2}$/.test(s) || /^\d{2}\/\d{2}/.test(s);
+const clean = (s) => (s ?? '').replace(/Apply Pass|Auto Pick|Clear All|New|\+?\d+ Markets/gi, '').replace(/\.{2,}$/, '').trim();
+const NAV = /^(login|register|home$|live|jackpots$|shikisha|aviator|ligi|casino|promotions|virtuals|crash|live score|app$|print matches|search|back to top|learn more|terms|privacy|responsible|play$|sports$|contact|telephone|email|office|license|18\+|©|mpesa|paybill|shops|call customer|preferences|customise|display|data saver|get help|legal|download|must be won$|midweek|sababisha|results$|game pass|token|stake|combinations|picked|place bet|deposit|notifications|my bets|profile|soccer betting|join our|whether you|keep it|watch live|open a|how to|normal \(0\))/i;
+const skip = (s) => !s || NAV.test(s) || isOdd(s) || s === '-' || /^[1X2]$/i.test(s);
 
 const fixtures = []; const seen = new Set();
-let league = '', date = '', time = '';
-const names = [];
-const push = (home, away, odds) => { const k = home + away; if (!seen.has(k) && home && away) { seen.add(k); fixtures.push({ league, date, time, home, away, odds }); } };
+const push = (home, away, odds, d = '', t = '', l = '') => { 
+  const k = home + away; 
+  if (!seen.has(k) && home && away && !isOdd(home) && !isOdd(away)) { 
+    seen.add(k); 
+    fixtures.push({ league: l, date: d, time: t, home, away, odds }); 
+  } 
+};
 
 for (let i = 0; i < lines.length; i++) {
   const L = lines[i];
-  // Dialect C: 10-column print table (date, time, [id], "A vs B", 10 odds)
+
+  // Dialect E: Betika Prematch vertical (League / Date,Time / Home / Away / H / D / A)
+  if (isOdd(L) && isOdd(lines[i+1]) && isOdd(lines[i+2])) {
+    const away = clean(lines[i-1]);
+    const home = clean(lines[i-2]);
+    const dtLine = lines[i-3] ?? '';
+    const leagueLine = lines[i-4] ?? '';
+    const dm = dtLine.match(/(\d{2}\/\d{2}),?\s*(\d{1,2}:\d{2})/);
+    if (dm && home && away && !skip(home) && !skip(away)) {
+      push(home, away, [L, lines[i+1], lines[i+2]], dm[1], dm[2], clean(leagueLine));
+      i += 2;
+      continue;
+    }
+  }
+
+  // Dialect D: 10-column single line (Print Matches)
+  const m10 = L.match(/^(\d{2}\/\d{2}\/\d{2,4})\s+(\d{1,2}:\d{2})\s+(?:(\d{3,6})\s+)?(.+?)\s+vs\.?\s+(.+?)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)$/);
+  if (m10) {
+    const od = m10.slice(6, 16);
+    if (od.slice(0, 3).every(isOdd) && od.slice(3).every(oddsTok)) { 
+      push(clean(m10[4]), clean(m10[5]), od, m10[1], m10[2], ''); 
+      continue; 
+    }
+  }
+
+  // Dialect C: 10-column table cells on separate lines
   if (/^\d{2}\/\d{2}\/\d{2,4}$/.test(L) && /^\d{1,2}:\d{2}$/.test(lines[i + 1] ?? '')) {
     let j = i + 2;
     if (/^\d{3,6}$/.test(lines[j] ?? '')) j++;
@@ -51,33 +97,11 @@ for (let i = 0; i < lines.length; i++) {
       const od = lines.slice(j + 1, j + 11);
       if (od.length === 10 && od.slice(0, 3).every(isOdd) && od.slice(3).every(oddsTok)) {
         const [home, away] = match.split(/\s+vs\.?\s+/i);
-        push(clean(home), clean(away), od);
+        push(clean(home), clean(away), od, L, lines[i + 1], '');
         i = j + 10; continue;
       }
     }
   }
-  const dm = L.match(/(\d{2}\/\d{2}),?\s*(\d{1,2}:\d{2})/);
-  const lm = L.match(/^soccer\s*[•>:-]\s*(.+)$/i);
-  if (dm) { date = dm[1]; time = dm[2]; }
-  if (lm) { league = lm[1].replace(/\s*(?:apply pass|auto pick|\d{2}\/\d{2},?\s*\d{1,2}:\d{2}).*$/i, '').replace(/[.,\s…]+$/, '').trim(); continue; }
-  if (dm) continue;
-  let odds = null, consumed = 0;
-  const one = L.match(/^1\s+(\d+\.\d+)\s+X\s+(\d+\.\d+)\s+2\s+(\d+\.\d+)$/i);
-  if (one) odds = [one[1], one[2], one[3]];
-  else if (/^1\s+\d+\.\d+$/i.test(L) && /^X\s+\d+\.\d+$/i.test(lines[i + 1] ?? '') && /^2\s+\d+\.\d+$/i.test(lines[i + 2] ?? '')) {
-    odds = [L.match(/(\d+\.\d+)/)[1], lines[i + 1].match(/(\d+\.\d+)/)[1], lines[i + 2].match(/(\d+\.\d+)/)[1]]; consumed = 2;
-  }
-  else if (L === '1' && isOdd(lines[i + 1]) && lines[i + 2] === 'X' && isOdd(lines[i + 3]) && lines[i + 4] === '2' && isOdd(lines[i + 5])) {
-    odds = [lines[i + 1], lines[i + 3], lines[i + 5]]; consumed = 5;
-  }
-  else if (/^\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+$/.test(L)) odds = L.split(/\s+/);
-  if (odds) {
-    if (names.length >= 2) push(names[names.length - 2], names[names.length - 1], odds);
-    i += consumed; continue;
-  }
-  const vm = L.match(/^(.+?)\s+vs\.?\s+(.+)$/i);
-  if (vm && !isOdd(L)) { names.push(clean(vm[1]), clean(vm[2])); if (names.length > 6) names.shift(); continue; }
-  if (!skip(L) && !/^soccer/i.test(L)) { names.push(clean(L)); if (names.length > 6) names.shift(); }
 }
 
 const dated = fixtures.filter((f) => f.date);
@@ -86,5 +110,9 @@ const block = (dated.length ? dated : fixtures).map(row).join('\n');
 writeFileSync(`tools/scrapes/${SITE}-${stamp}.block.txt`, block);
 writeFileSync(`tools/scrapes/${SITE}-${stamp}.json`, JSON.stringify(fixtures, null, 2));
 console.log(`✅ ${fixtures.length} fixtures (${dated.length} dated, ${fixtures.filter((f) => f.odds.length === 10).length} with extended cols)`);
-if (fixtures.length) { console.log(block); try { execSync('clip', { input: block }); console.log('📋 copied to clipboard'); } catch {} }
-else console.log('--- RAW PAGE HEAD (first 40 lines) ---\n' + lines.slice(0, 40).join('\n'));
+if (fixtures.length) { 
+  console.log(block.slice(0, 500) + (block.length > 500 ? '\n... (truncated)' : '')); 
+  try { execSync('clip', { input: block }); console.log('📋 copied to clipboard'); } catch {} 
+} else {
+  console.log('--- RAW PAGE HEAD (first 40 lines) ---\n' + lines.slice(0, 40).join('\n'));
+}
