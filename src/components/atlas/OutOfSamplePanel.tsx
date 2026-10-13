@@ -7,15 +7,26 @@ import {
   evaluateIndependentModel,
   evaluateHybridModel,
 } from '@/lib/v9/analysis/backtester';
-import { fmtPct } from '@/lib/v9/ui/atlas-colors';
 import type { CalibrationMetrics } from '@/lib/v9/analysis/backtester';
+import { fmtPct } from '@/lib/v9/ui/atlas-colors';
+
+function Row({ label, m, color }: { label: string; m: CalibrationMetrics; color: string }) {
+  return (
+    <tr className="border-b border-zinc-800">
+      <td className={`py-2 font-bold ${color}`}>{label}</td>
+      <td className="py-2 text-center tabular-nums">{m.brier.toFixed(3)}</td>
+      <td className="py-2 text-center tabular-nums">{m.logLoss.toFixed(3)}</td>
+      <td className="py-2 text-center tabular-nums">{fmtPct(m.accuracy)}</td>
+    </tr>
+  );
+}
 
 export default function OutOfSamplePanel() {
   const predictions = useAtlasStore((s) => s.predictions);
 
   const results = useMemo(() => {
     const sorted = [...predictions].sort((a, b) => a.timestamp - b.timestamp);
-    if (sorted.length < 30) return null; // Need enough data for a meaningful test set
+    if (sorted.length < 30) return null;
 
     const { test } = splitChronologically(sorted, 0.6, 0.2);
     if (test.length < 5) return null;
@@ -39,15 +50,6 @@ export default function OutOfSamplePanel() {
       </div>
     );
   }
-
-  const Row = ({ label, m, color }: { label: string; m: CalibrationMetrics; color: string }) => (
-    <tr className="border-b border-zinc-800">
-      <td className={`py-2 font-bold ${color}`}>{label}</td>
-      <td className="py-2 text-center tabular-nums">{m.brier.toFixed(3)}</td>
-      <td className="py-2 text-center tabular-nums">{m.logLoss.toFixed(3)}</td>
-      <td className="py-2 text-center tabular-nums">{fmtPct(m.accuracy)}</td>
-    </tr>
-  );
 
   return (
     <div className="rounded-xl border border-indigo-500/25 bg-zinc-900/60 p-4 space-y-3">

@@ -4,6 +4,7 @@ import { useAtlasStore } from '@/lib/v9/store/atlas-store';
 import { evaluatePredictions } from '@/lib/v9/analysis/backtester';
 import type { CalibrationMetrics } from '@/lib/v9/analysis/backtester';
 import { fmtPct } from '@/lib/v9/ui/atlas-colors';
+import OutOfSamplePanel from './OutOfSamplePanel';
 
 function MetricsCard({ title, m, color }: { title: string; m: CalibrationMetrics; color: string }) {
   return (

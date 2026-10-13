@@ -99,12 +99,10 @@ function settleKey(key: string, i: number, j: number): boolean | null {
   return null;
 }
 
-// v9.10 part 96: band-aware stake for backtest flags
-// mirrors Part 94 Screener guard: hi-band halved, sub-1.50 odds halved again
 function guardedStake(ev: number, odds: number): number {
-  if (ev > 0.06) return 0;     // part 97 floor policy: hi-band skipped
+  if (ev > 0.06) return 0;
   let s = 1;
-  if (odds < 1.5) s *= 0.5;    // short-price guard
+  if (odds < 1.5) s *= 0.5;
   return s;
 }
 
@@ -280,6 +278,7 @@ export default function StandardLabPanel() {
 
   return (
     <div className="space-y-4">
+      <OutOfSamplePanel />
       <div className="rounded-xl border border-blue-500/25 bg-zinc-900/60 p-3">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-xs font-bold text-blue-400">
@@ -317,7 +316,7 @@ export default function StandardLabPanel() {
           {block(`Cumulative — ${agg.files} file${agg.files > 1 ? 's' : ''}`, agg.overall)}
 
           <div className="rounded-xl border border-fuchsia-500/25 bg-zinc-900/60 p-3">
-            <h4 className="mb-1 text-[10px] font-bold uppercase text-fuchsia-300">🛡 Band-aware stake guard impact (Part 94 applied)</h4>
+            <h4 className="mb-1 text-[10px] font-bold uppercase text-fuchsia-300">🛡️ Band-aware stake guard impact (Part 94 applied)</h4>
             <div className="grid grid-cols-2 gap-4 text-[11px] text-zinc-300 md:grid-cols-4">
               <div>
                 <div className="text-zinc-500">Raw flat P/L</div>
