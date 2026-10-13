@@ -1,16 +1,20 @@
 // ============================================================
-// Adaptive Monte Carlo — v9.0 upgrade over fixed 10k:
-//  • CDF-inverse sampling (v8.7, ~100x faster than naive)
-//  • ANTITHETIC VARIATES: sample u and 1-u as pairs → ~3x variance reduction
-//  • SEQUENTIAL STOPPING: start 2k draws, extend to 20k only if
-//    CI half-width > tolerance (PEMC-inspired, arXiv 2024)
-//  • RULE 5 PRESERVED: MC is a cross-check, NEVER replaces grid model
+// Adaptive Monte Carlo — v9.10 review rewrite (§B, §H)
+//   • CDF-inverse sampling (v8.7, ~100x faster than naive)
+//   • §B FIX: parlay legs use INDEPENDENT per-leg RNG streams;
+//     antithetic variates (u, 1-u) apply WITHIN each leg across
+//     the two replicates of a pair — never across legs.
+//     Joint slip probability = product of leg probabilities.
+//   • §H FIX: confidence intervals use the pair-mean (batch)
+//     estimator, valid under antithetic pairing; sequential
+//     stopping checks the paired CI half-width.
+//   • RULE 5 PRESERVED: MC is a cross-check, NEVER replaces grid model
 // ============================================================
 import { dcTau } from './dixon-coles';
 import { poisson, mulberry32 } from './poisson';
 import type { Outcome, SimResult, DisagreementLevel, SimRecommendation } from '../atlas-types';
 
-interface Sampler { cdf: Float64Array; scores: Uint8Array; } // scores = i*10+j
+export interface Sampler { cdf: Float64Array; scores: Uint8Array; } // scores = i*10+j
 
 export function buildSampler(lH: number, lA: number, rho: number): Sampler {
   const cdf = new Float64Array(100);
@@ -38,10 +42,36 @@ function sample(s: Sampler, u: number): number {
   return s.scores[lo];
 }
 
+// §H: pair-based (batch-mean) CI half-width — valid under antithetic pairing.
+export function pairMeanCiHalf(pairSums: ArrayLike<number>, z = 1.96): { p: number; half: number } {
+  const n = pairSums.length;
+  if (n < 2) return { p: NaN, half: NaN };
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += pairSums[i] / 2;
+  const p = sum / n;
+  let ss = 0;
+  for (let i = 0; i < n; i++) { const m = pairSums[i] / 2 - p; ss += m * m; }
+  return { p, half: z * Math.sqrt(ss / (n - 1) / n) };
+}
+
+// Test/debug helper: exact 1X2 marginals recovered from a sampler's CDF.
+export function samplerOutcomeProbs(s: Sampler): Record<Outcome, number> {
+  const out: Record<Outcome, number> = { home: 0, draw: 0, away: 0 };
+  let prev = 0;
+  for (let k = 0; k < s.cdf.length; k++) {
+    const p = s.cdf[k] - prev;
+    prev = s.cdf[k];
+    const i = (s.scores[k] / 10) | 0;
+    const j = s.scores[k] % 10;
+    out[i > j ? 'home' : i === j ? 'draw' : 'away'] += p;
+  }
+  return out;
+}
+
 export interface AdaptiveMCOptions {
-  minPairs?: number;    // default 1000 (=2k draws)
-  maxPairs?: number;    // default 10000 (=20k draws)
-  tol?: number;         // CI half-width target, default 0.008
+  minPairs?: number;   // default 1000 (=2k draws)
+  maxPairs?: number;   // default 10000 (=20k draws)
+  tol?: number;        // paired-CI half-width target, default 0.008
   seed?: number;
   gridProbs?: Record<Outcome, number>;
   gridPick?: Outcome;
@@ -51,38 +81,44 @@ export function adaptiveSimulate(lH: number, lA: number, rho: number, opts: Adap
   const minPairs = opts.minPairs ?? 1000;
   const maxPairs = opts.maxPairs ?? 10000;
   const tol = opts.tol ?? 0.008;
-  const rng = mulberry32(opts.seed ?? 1337);
-  const smp = buildSampler(lH, lA, rho);
+  const rng = mulberry32(opts.seed ?? 0xC0FFEE);
+  const sampler = buildSampler(lH, lA, rho);
 
-  let cH = 0, cD = 0, cA = 0, gSum = 0, gSq = 0;
+  const cTot: Record<Outcome, number> = { home: 0, draw: 0, away: 0 };
+  const pairSums: Record<Outcome, number[]> = { home: [], draw: [], away: [] };
   const scoreCount = new Float64Array(100);
-  let total = 0;
+  let total = 0, gSum = 0, gSq = 0;
 
-  const batch = (nPairs: number) => {
-    for (let n = 0; n < nPairs; n++) {
-      const u = rng();
-      for (const uu of [u, 1 - u]) {          // antithetic pair
-        const code = sample(smp, Math.min(uu, 0.999999));
-        const i = (code / 10) | 0, j = code % 10;
-        if (i > j) cH++; else if (i === j) cD++; else cA++;
-        const g = i + j;
-        gSum += g; gSq += g * g;
-        scoreCount[code]++;
-      }
+  for (let pairs = 0; pairs < maxPairs; pairs++) {
+    const u = rng();
+    const sums: Record<Outcome, [number, number]> = { home: [0, 0], draw: [0, 0], away: [0, 0] };
+    for (let rep = 0; rep < 2; rep++) {
+      const uu = Math.min(rep === 0 ? u : 1 - u, 0.999999);
+      const code = sample(sampler, uu);
+      const i = (code / 10) | 0, j = code % 10;
+      const res: Outcome = i > j ? 'home' : i === j ? 'draw' : 'away';
+      cTot[res]++; sums[res][rep]++;
+      const g = i + j; gSum += g; gSq += g * g;
+      scoreCount[code]++;
+      total++;
     }
-    total += nPairs * 2;
-  };
-
-  batch(minPairs);
-
-  // sequential stopping: check CI on max-variance outcome
-  const ciHalf = (c: number) => 1.96 * Math.sqrt(Math.max((c / total) * (1 - c / total) / total, 1e-12));
-  while (total < maxPairs * 2 && Math.max(ciHalf(cH), ciHalf(cD), ciHalf(cA)) > tol) {
-    batch(minPairs);
+    (Object.keys(sums) as Outcome[]).forEach((k) => pairSums[k].push(sums[k][0] + sums[k][1]));
+    if (pairs + 1 >= minPairs && (pairs + 1) % 100 === 0) {
+      const half = Math.max(
+        pairMeanCiHalf(pairSums.home).half,
+        pairMeanCiHalf(pairSums.draw).half,
+        pairMeanCiHalf(pairSums.away).half,
+      );
+      if (half <= tol) break;
+    }
   }
 
-  const probs = { home: cH / total, draw: cD / total, away: cA / total };
-  const ci95 = { home: ciHalf(cH), draw: ciHalf(cD), away: ciHalf(cA) };
+  const probs: Record<Outcome, number> = { home: cTot.home / total, draw: cTot.draw / total, away: cTot.away / total };
+  const ci95: Record<Outcome, number> = {
+    home: pairMeanCiHalf(pairSums.home).half,
+    draw: pairMeanCiHalf(pairSums.draw).half,
+    away: pairMeanCiHalf(pairSums.away).half,
+  };
   const meanGoals = gSum / total;
   const sdGoals = Math.sqrt(Math.max(gSq / total - meanGoals * meanGoals, 0));
 
@@ -123,24 +159,25 @@ export function adaptiveSimulate(lH: number, lA: number, rho: number, opts: Adap
   };
 }
 
-// Parlay simulation (v8.7 spec, antithetic-enhanced)
+// Parlay simulation (v9.10 §B: independent per-leg streams, antithetic within-leg)
 export function simulateParlay(
   legs: { lH: number; lA: number; rho: number; pick: Outcome }[],
-  nPairs = 5000, seed = 42,
+  nPairs = 5000,
+  seed = 42,
 ) {
-  const rng = mulberry32(seed);
   const samplers = legs.map((l) => buildSampler(l.lH, l.lA, l.rho));
+  const rngs = legs.map((_, k) => mulberry32((seed + k * 0x9e3779b9) >>> 0));
   const legHits = legs.map(() => 0);
   let allHit = 0;
   const dist = new Float64Array(legs.length + 1);
-  const total = nPairs * 2;
 
   for (let n = 0; n < nPairs; n++) {
-    const u = rng();
-    for (const uu of [u, 1 - u]) {
+    const us = rngs.map((r) => r());
+    for (const flip of [0, 1]) {
       let correct = 0;
       legs.forEach((leg, k) => {
-        const code = sample(samplers[k], Math.min(uu, 0.999999));
+        const uu = Math.min(flip === 0 ? us[k] : 1 - us[k], 0.999999);
+        const code = sample(samplers[k], uu);
         const i = (code / 10) | 0, j = code % 10;
         const res: Outcome = i > j ? 'home' : i === j ? 'draw' : 'away';
         if (res === leg.pick) { legHits[k]++; correct++; }
@@ -149,6 +186,7 @@ export function simulateParlay(
       dist[correct]++;
     }
   }
+  const total = nPairs * 2;
   const cumulative: Record<number, number> = {};
   for (let x = Math.ceil(legs.length / 2); x <= legs.length; x++) {
     let acc = 0;
