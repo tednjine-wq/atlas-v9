@@ -23,8 +23,13 @@ function readOdds(r: PredictionRecord): OddsTriple {
     h?: unknown; d?: unknown; a?: unknown;
     odds?: { h?: unknown; d?: unknown; a?: unknown };
     oddsH?: unknown; oddsD?: unknown; oddsA?: unknown;
+    entryOdds?: Record<Outcome, unknown>;
   };
   const num = (x: unknown): number => (typeof x === 'number' && isFinite(x) ? x : parseFloat(String(x ?? '')));
+  if (rec.entryOdds) {
+    const eh = num(rec.entryOdds.home), ed = num(rec.entryOdds.draw), ea = num(rec.entryOdds.away);
+    if (eh > 1 && ed > 1 && ea > 1) return { h: eh, d: ed, a: ea };
+  }
   const h = num(rec.h ?? rec.odds?.h ?? rec.oddsH);
   const d = num(rec.d ?? rec.odds?.d ?? rec.oddsD);
   const a = num(rec.a ?? rec.odds?.a ?? rec.oddsA);
