@@ -58,6 +58,7 @@ export default function CalibrationPanel() {
 
   return (
     <div className="space-y-4">
+      <OutOfSamplePanel />
       <div className="rounded-xl border border-teal-500/25 bg-zinc-900/60 p-3">
         <h3 className="mb-2 text-xs font-bold text-teal-300">CLOSING LINE VALUE — the skill metric</h3>
         {clv.vals.length === 0 ? (

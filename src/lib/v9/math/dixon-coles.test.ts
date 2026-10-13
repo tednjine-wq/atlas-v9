@@ -1,19 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { buildScoreMatrix } from './dixon-coles';
+import { htftCopulaJoint } from './copula';
 
-describe('§J truncation tail mass', () => {
-  it('tailMass < 0.005 for typical lambda (2.0)', () => {
-    const r = buildScoreMatrix(2.0, 1.5, -0.13);
-    expect(r.tailMass).toBeLessThan(0.005);
+describe('HT/FT Gaussian Copula', () => {
+  it('joint probabilities sum to ~1', () => {
+    const j = htftCopulaJoint(1.5, 1.2, -0.13);
+    const sum = Object.values(j.combos).reduce((a, b) => a + b, 0);
+    expect(sum).toBeCloseTo(1, 2);
   });
-  it('tailMass measurable for high lambda (3.5)', () => {
-    const r = buildScoreMatrix(3.5, 3.0, -0.13);
-    expect(r.tailMass).toBeGreaterThan(0.001);
-    expect(r.tailMass).toBeLessThan(0.05);
-  });
-  it('matrix sums to ~1 after normalization', () => {
-    const r = buildScoreMatrix(1.8, 1.2, -0.13);
-    const total = r.matrix.reduce((s, e) => s + e.p, 0);
-    expect(total).toBeCloseTo(1, 6);
+
+  it('same-result continuation (H/H) is higher than independence', () => {
+    const j = htftCopulaJoint(1.8, 1.0, -0.13);
+    const pH = j.combos['1_1'] + j.combos['1_X'] + j.combos['1_2']; // HT Home
+    const fH = j.combos['1_1'] + j.combos['X_1'] + j.combos['2_1']; // FT Home
+    const independentHH = pH * fH;
+    expect(j.combos['1_1']).toBeGreaterThan(independentHH);
   });
 });

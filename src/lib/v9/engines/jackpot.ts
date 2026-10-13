@@ -54,7 +54,8 @@ export function atlasAnalyseJackpotV9(match: Match, phi = 0.10): AtlasJackpotAna
     edges, evs, spotted: spots[0] ?? null, hasRealSpot: spots.length > 0, maxEdge,
   };
 
-  const thresholdPass = Math.abs(dc[pick] - 0.5) >= phi;
+  const pickEv = evs[pick];
+  const thresholdPass = pickEv >= phi;
   const verdict: Verdict = thresholdPass ? 'BET' : 'NO-BET';
 
   return {

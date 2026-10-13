@@ -5,6 +5,7 @@ import { computeExtendedMarketsV9 } from '@/lib/v9/markets/extended-markets';
 import { DC_RHO_STANDARD, EMPTY_USER_ODDS } from '@/lib/v9/atlas-types';
 import type { Match, Outcome } from '@/lib/v9/atlas-types';
 import { fmtPct } from '@/lib/v9/ui/atlas-colors';
+import OutOfSamplePanel from './OutOfSamplePanel';
 
 interface Bucket { n: number; hits: number; profit: number; guardedProfit: number; }
 interface Report {
