@@ -1,20 +1,19 @@
-// ============================================================
-// Free real-world context (no API keys, no scraping):
-//  • ClubElo team-strength ratings -> Bayesian prior (conf 5)
-//  • open-meteo geocoding + forecast -> weather at kickoff
-// Server-side fetch only (CORS); ALL prediction math stays
-// client-side (Rule 7 preserved). Best-effort: nulls on failure.
-// ============================================================
+// v9.10 §E: venue-aware, kickoff-timezone-aware weather. Explicit unavailable states.
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 
+async function fetchWithTimeout(url: string, ms: number): Promise<Response> {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  try { return await fetch(url, { signal: ctl.signal, headers: { 'User-Agent': 'atlas-research/9.10' } }); }
+  finally { clearTimeout(t); }
+}
+
 async function fetchElo(team: string): Promise<number | null> {
   if (!team) return null;
   try {
-    const res = await fetch(`https://clubelo.com/Team/${encodeURIComponent(team)}`, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
+    const res = await fetchWithTimeout(`https://clubelo.com/Team/${encodeURIComponent(team)}`, 5000);
     if (!res.ok) return null;
     const text = await res.text();
     const lines = text.trim().split(/\r?\n/).filter(Boolean);
@@ -25,31 +24,54 @@ async function fetchElo(team: string): Promise<number | null> {
   } catch { return null; }
 }
 
-async function fetchWeather(city: string) {
+interface WeatherResult {
+  city?: string; tempC?: number; precipMm?: number; windKmh?: number;
+  unavailable?: boolean; reason?: 'missing_kickoff' | 'geocoding_failed' | 'forecast_failed' | 'no_matching_hour';
+}
+
+async function fetchWeather(locationQuery: string, kickoffIso: string | undefined): Promise<WeatherResult> {
+  if (!kickoffIso || isNaN(Date.parse(kickoffIso))) {
+    return { unavailable: true, reason: 'missing_kickoff' };
+  }
+  const kickoffUtc = new Date(kickoffIso).getTime();
   try {
-    const g = await fetch(
-      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`,
+    const g = await fetchWithTimeout(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(locationQuery)}&count=1&language=en&format=json`, 5000
     ).then((r) => r.json());
     const loc = g?.results?.[0];
-    if (!loc) return null;
-    const w = await fetch(
+    if (!loc) return { unavailable: true, reason: 'geocoding_failed' };
+
+    const w = await fetchWithTimeout(
       `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}` +
-      `&hourly=temperature_2m,precipitation,wind_speed_10m&forecast_days=3`,
+      `&hourly=temperature_2m,precipitation,wind_speed_10m&forecast_days=3&timezone=UTC`, 5000
     ).then((r) => r.json());
+
     const times: string[] = w?.hourly?.time ?? [];
-    const idx = times.length ? Math.min(times.length - 1, 18) : 0;
+    if (!times.length) return { unavailable: true, reason: 'forecast_failed' };
+
+    let bestIdx = 0, bestDiff = Infinity;
+    for (let i = 0; i < times.length; i++) {
+      const diff = Math.abs(new Date(times[i]).getTime() - kickoffUtc);
+      if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    }
+    if (bestDiff > 90 * 60 * 1000) return { unavailable: true, reason: 'no_matching_hour' };
+
     return {
       city: String(loc.name),
-      tempC: Math.round(w?.hourly?.temperature_2m?.[idx] ?? 20),
-      precipMm: Math.round((w?.hourly?.precipitation?.[idx] ?? 0) * 10) / 10,
-      windKmh: Math.round(w?.hourly?.wind_speed_10m?.[idx] ?? 10),
+      tempC: Math.round(w?.hourly?.temperature_2m?.[bestIdx] ?? 20),
+      precipMm: Math.round((w?.hourly?.precipitation?.[bestIdx] ?? 0) * 10) / 10,
+      windKmh: Math.round(w?.hourly?.wind_speed_10m?.[bestIdx] ?? 10),
     };
-  } catch { return null; }
+  } catch { return { unavailable: true, reason: 'forecast_failed' }; }
 }
 
 export async function POST(req: Request) {
   try {
-    const { home, away, kickoff } = await req.json();
+    const body = await req.json();
+    const home = String(body.home ?? '');
+    const away = String(body.away ?? '');
+    const venue = String(body.venue ?? body.city ?? home);
+    const kickoff = body.kickoff;
 
     let elo = null;
     const [rh, ra] = await Promise.all([fetchElo(home), fetchElo(away)]);
@@ -62,9 +84,9 @@ export async function POST(req: Request) {
       elo = { pHome, pDraw, pAway, confidence: 5, ratingHome: Math.round(rh), ratingAway: Math.round(ra) };
     }
 
-    const weather = await fetchWeather(home);
+    const weather = await fetchWeather(venue, kickoff);
     return NextResponse.json({ elo, weather, kickoff: kickoff ?? '' });
   } catch (e) {
-    return NextResponse.json({ elo: null, weather: null, reason: e instanceof Error ? e.message : 'error' });
+    return NextResponse.json({ elo: null, weather: { unavailable: true, reason: 'request_error' }, reason: e instanceof Error ? e.message : 'error' });
   }
 }

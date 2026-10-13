@@ -294,8 +294,8 @@ export function computeExtendedMarketsV9(
   groups.push({ name: 'FTR + BTTS', items: ftrBTTSItems });
 
   groups.push({ name: 'Clean Sheet', items: [
-    mk('csHome', 'Home clean sheet', sumWhere((i, j) => j === 0), 'Clean Sheet'),
-    mk('csAway', 'Away clean sheet', sumWhere((i, j) => i === 0), 'Clean Sheet'),
+    mk('csHome', 'Home clean sheet', sumWhere((_i, j) => j === 0), 'Clean Sheet'),
+    mk('csAway', 'Away clean sheet', sumWhere((i) => i === 0), 'Clean Sheet'),
   ]});
 
   const wm = (d: number) => sumWhere((i, j) => i - j === d);

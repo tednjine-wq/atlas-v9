@@ -10,7 +10,6 @@ const SPORTS = ['soccer_epl', 'soccer_spain_la_liga', 'soccer_italy_serie_a',
 
 interface OddsOutcome { name: string; price: number; }
 interface OddsMarket { key: string; outcomes: OddsOutcome[]; }
-interface OddsBook { home_team?: string; away_team?: string; markets?: OddsMarket[]; }
 interface OddsEvent {
   id: string; home_team: string; away_team: string; sport_title: string;
   commence_time: string; bookmakers: { key: string; markets: OddsMarket[] }[];
