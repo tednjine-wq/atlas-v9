@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect -- intentional one-shot store sync after import batch; event-driven refactor tracked in Phase 4 (§L) */
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import { useAtlasStore } from '@/lib/v9/store/atlas-store';

@@ -35,12 +35,16 @@ export class Computed<T> {
     if (activeComputation) this.subs.add(activeComputation.recompute);
     if (this.dirty) {
       const prev = activeComputation;
-      activeComputation = this;
+      setActiveComputation(this);
       try { this.cached = this.fn(); } finally { activeComputation = prev; }
       this.dirty = false;
     }
     return this.cached as T;
   }
+}
+
+function setActiveComputation(c: typeof activeComputation): void {
+  activeComputation = c;
 }
 
 export const signal = <T>(v: T) => new Signal(v);
