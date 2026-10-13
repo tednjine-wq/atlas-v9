@@ -1,10 +1,7 @@
 // ============================================================
-// STANDARD ENGINE v9.7 — EV-maximizing, rho = -0.13 (RULE 1)
-// v9.7: multi-market WLS (§8) now guarded by CROSS-MARKET
-// CONSISTENCY GATES: each extra price must agree with the
-// 1X2-calibrated reference within tolerance, else it is dropped
-// (kills garbage-in from mis-pasted PDF text / stale prices).
-// Honest confidence, BET/NO-BET verdict, tightGame flag (v9.1).
+// STANDARD ENGINE v9.10 — EV-maximizing, rho = -0.13 (RULE 1)
+// v9.10 review: §D confidence from final probs, §A φ as EV gate.
+// v9.7: multi-market WLS guarded by cross-market consistency gates.
 // ============================================================
 import { DC_RHO_STANDARD } from '../atlas-types';
 import type {
@@ -27,7 +24,6 @@ function marginWarning(minOdds: number): MarginWarning {
 
 interface RefProbs { p1X: number; pX2: number; o15: number; o25: number; btts: number; }
 
-// v9.7: gated extraction — extra prices must be consistent with 1X2 reference
 function extraTargets(u: Record<string, number>, ref: RefProbs): ExtraMarketProbs {
   const imp = (o: number) => (o > 1 ? 1 / o : 0);
   const x: ExtraMarketProbs = { count: 0 };
@@ -55,10 +51,9 @@ export function atlasAnalyseV9(
 
   const { probs: bookProbs, margin } = stripMargin(h, d, a);
 
-  // v9.7: 1X2-only reference first, then gated multi-market blend
   const baseCal = calibrateLambda(h, d, a, DC_RHO_STANDARD, match.prior);
   const smRef = buildScoreMatrix(baseCal.lambdaH, baseCal.lambdaA, DC_RHO_STANDARD);
-  const pRef = outcomeProbs(smRef.raw, smRef.sum);
+  const pRef = outcomeProbs(smRef.raw, smRef.sum, smRef.size);
   let le1 = 0, le2 = 0, bt = 0;
   for (const e of smRef.matrix) {
     const t = e.i + e.j;
@@ -77,7 +72,7 @@ export function atlasAnalyseV9(
   const rho = DC_RHO_STANDARD + learnedParams.rhoAdjust;
 
   const sm = buildScoreMatrix(cal.lambdaH, cal.lambdaA, rho);
-  const dc = outcomeProbs(sm.raw, sm.sum);
+  const dc = outcomeProbs(sm.raw, sm.sum, sm.size);
 
   const tightGame = Math.abs(dc.home - dc.away) < 0.08;
 
@@ -124,6 +119,9 @@ export function atlasAnalyseV9(
   );
   const probs: Record<Outcome, number> = { home: fh, draw: fd, away: fa };
 
+  // §D FIX: recompute confidence from final post-learning probabilities
+  confidence = Math.min(probs[pick], 0.78);
+
   const portfolio: PortfolioOutcome[] = (['home', 'draw', 'away'] as Outcome[]).map((o) => {
     const ev = probs[o] * oddsMap[o] - 1;
     const variance = (1 - probs[o]) * probs[o] * oddsMap[o] ** 2;
@@ -135,10 +133,11 @@ export function atlasAnalyseV9(
   if (best) best.isMaxEp = true;
 
   const htft = htftCopulaJoint(cal.lambdaH, cal.lambdaA, DC_RHO_STANDARD);
-  const thresholdPass = Math.abs(probs[pick] - 0.5) >= phi;
 
+  // §A FIX: φ gates on EV (fraction), not |p - 0.5|
   const bestEv = Math.max(...portfolio.map((p) => p.ev));
-  const verdict: Verdict = thresholdPass && bestEv > 0 ? 'BET' : 'NO-BET';
+  const thresholdPass = bestEv >= phi;
+  const verdict: Verdict = thresholdPass ? 'BET' : 'NO-BET';
 
   return {
     pick, confidence, probs, dcProbs: dc,

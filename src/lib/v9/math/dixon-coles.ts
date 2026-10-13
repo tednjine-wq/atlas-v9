@@ -1,5 +1,5 @@
 // ============================================================
-// Dixon-Coles tau + score matrix (v8.7 exact, v8.4 rho-consistency fix baked in)
+// Dixon-Coles tau + score matrix (v9.10 §J: tail-mass measured)
 // ============================================================
 import { poisson } from './poisson';
 import type { ScoreEntry, Outcome } from '../atlas-types';
@@ -14,34 +14,37 @@ export function dcTau(i: number, j: number, lH: number, lA: number, rho: number)
 
 export interface ScoreMatrixResult {
   matrix: ScoreEntry[];       // sorted by p desc
-  raw: Float64Array;          // flat 10x10, unsorted, row i col j
-  sum: number;
+  raw: Float64Array;          // flat size*size, unsorted, row i col j
+  sum: number;                // sum before normalization (1 - tailMass)
+  tailMass: number;           // §J: omitted probability beyond truncation
+  size: number;               // matrix dimension (10 default, adaptive)
 }
 
-export function buildScoreMatrix(lH: number, lA: number, rho: number): ScoreMatrixResult {
-  const raw = new Float64Array(100);
+export function buildScoreMatrix(lH: number, lA: number, rho: number, size = 10): ScoreMatrixResult {
+  const raw = new Float64Array(size * size);
   let sum = 0;
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < size; i++) {
     const pi = poisson(i, lH);
-    for (let j = 0; j < 10; j++) {
+    for (let j = 0; j < size; j++) {
       const p = dcTau(i, j, lH, lA, rho) * pi * poisson(j, lA);
-      raw[i * 10 + j] = p;
+      raw[i * size + j] = p;
       sum += p;
     }
   }
+  const tailMass = Math.max(0, 1 - sum);
   const matrix: ScoreEntry[] = [];
-  for (let i = 0; i < 10; i++)
-    for (let j = 0; j < 10; j++)
-      matrix.push({ s: `${i}:${j}`, i, j, p: raw[i * 10 + j] / sum });
+  for (let i = 0; i < size; i++)
+    for (let j = 0; j < size; j++)
+      matrix.push({ s: `${i}:${j}`, i, j, p: raw[i * size + j] / sum });
   matrix.sort((a, b) => b.p - a.p);
-  return { matrix, raw, sum };
+  return { matrix, raw, sum, tailMass, size };
 }
 
-export function outcomeProbs(raw: Float64Array, sum: number): Record<Outcome, number> {
+export function outcomeProbs(raw: Float64Array, sum: number, size = 10): Record<Outcome, number> {
   let h = 0, d = 0, a = 0;
-  for (let i = 0; i < 10; i++)
-    for (let j = 0; j < 10; j++) {
-      const p = raw[i * 10 + j] / sum;
+  for (let i = 0; i < size; i++)
+    for (let j = 0; j < size; j++) {
+      const p = raw[i * size + j] / sum;
       if (i > j) h += p; else if (i === j) d += p; else a += p;
     }
   return { home: h, draw: d, away: a };
