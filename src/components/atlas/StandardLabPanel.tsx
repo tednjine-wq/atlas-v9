@@ -6,6 +6,11 @@ import { DC_RHO_STANDARD, EMPTY_USER_ODDS } from '@/lib/v9/atlas-types';
 import type { Match, Outcome } from '@/lib/v9/atlas-types';
 import { fmtPct } from '@/lib/v9/ui/atlas-colors';
 import OutOfSamplePanel from './OutOfSamplePanel';
+import {
+  appendLedger, clearLedger, ledgerToCsv, loadLedger, reconcileLedger,
+  guardedStakeFromEv, bandOf,
+} from '@/lib/v9/analysis/lab-ledger';
+import type { LedgerRow } from '@/lib/v9/analysis/lab-ledger';
 
 interface Bucket { n: number; hits: number; profit: number; guardedProfit: number; }
 interface Report {
@@ -40,25 +45,16 @@ const merge = (a: Report, r: Report): Report => ({
 });
 
 const fixBucket = (b?: Partial<Bucket>): Bucket => ({
-  n: b?.n ?? 0,
-  hits: b?.hits ?? 0,
-  profit: b?.profit ?? 0,
-  guardedProfit: b?.guardedProfit ?? 0,
+  n: b?.n ?? 0, hits: b?.hits ?? 0, profit: b?.profit ?? 0, guardedProfit: b?.guardedProfit ?? 0,
 });
 
 const fixReport = (r?: Partial<Report>): Report => ({
-  total: r?.total ?? 0,
-  analyzed: r?.analyzed ?? 0,
-  pickHits: r?.pickHits ?? 0,
-  pickProfit: r?.pickProfit ?? 0,
+  total: r?.total ?? 0, analyzed: r?.analyzed ?? 0,
+  pickHits: r?.pickHits ?? 0, pickProfit: r?.pickProfit ?? 0,
   brier: r?.brier ?? 0,
-  flags: r?.flags ?? 0,
-  flagHits: r?.flagHits ?? 0,
-  flagProfit: r?.flagProfit ?? 0,
-  flagProfitGuarded: r?.flagProfitGuarded ?? 0,
-  lo: fixBucket(r?.lo),
-  mid: fixBucket(r?.mid),
-  hi: fixBucket(r?.hi),
+  flags: r?.flags ?? 0, flagHits: r?.flagHits ?? 0,
+  flagProfit: r?.flagProfit ?? 0, flagProfitGuarded: r?.flagProfitGuarded ?? 0,
+  lo: fixBucket(r?.lo), mid: fixBucket(r?.mid), hi: fixBucket(r?.hi),
 });
 
 const loadAgg = (): AggState | null => {
@@ -67,18 +63,9 @@ const loadAgg = (): AggState | null => {
     if (!s) return null;
     const raw = JSON.parse(s) as Partial<AggState>;
     const leagues: Record<string, Report> = {};
-    for (const [k, v] of Object.entries(raw.leagues ?? {})) {
-      leagues[k] = fixReport(v);
-    }
-    return {
-      files: raw.files ?? 0,
-      names: raw.names ?? [],
-      overall: fixReport(raw.overall),
-      leagues,
-    };
-  } catch {
-    return null;
-  }
+    for (const [k, v] of Object.entries(raw.leagues ?? {})) leagues[k] = fixReport(v);
+    return { files: raw.files ?? 0, names: raw.names ?? [], overall: fixReport(raw.overall), leagues };
+  } catch { return null; }
 };
 
 function settleKey(key: string, i: number, j: number): boolean | null {
@@ -116,12 +103,14 @@ export default function StandardLabPanel() {
     setBusy(true);
     setLast(null);
     await new Promise((r) => setTimeout(r, 30));
+    const runAt = new Date().toISOString();
 
     const lines = text.split(/\r?\n/).filter((l) => l.trim());
     const hs = lines[0].split(',');
     const col = (name: string) => hs.indexOf(name);
     const first = (...names: string[]) => { for (const n of names) { const i = col(n); if (i >= 0) return i; } return -1; };
     const iDiv = first('Div'), iHome = first('HomeTeam'), iAway = first('AwayTeam');
+    const iDate = first('Date');
     const iHG = first('FTHG'), iAG = first('FTAG'), iR = first('FTR');
     const iH = first('B365H', 'PSH', 'BbAvH', 'WHH');
     const iD = first('B365D', 'PSD', 'BbAvD', 'WHD');
@@ -133,6 +122,7 @@ export default function StandardLabPanel() {
 
     const rep = blank();
     const leagues: Record<string, Report> = {};
+    const ledger: LedgerRow[] = [];
 
     const rows = lines.slice(1);
     for (let b = 0; b < rows.length; b += 25) {
@@ -145,6 +135,7 @@ export default function StandardLabPanel() {
         if (!(h > 1 && d > 1 && a > 1) || !(hg >= 0) || !(ag >= 0) || !ftr) continue;
         try {
           const div = (c[iDiv] ?? '??').trim() || '??';
+          const date = iDate >= 0 ? (c[iDate] ?? '').trim() : '';
           const userOdds: Record<string, number> = { ...EMPTY_USER_ODDS };
           if (iO25 >= 0 && parseFloat(c[iO25]) > 1) userOdds.over25 = parseFloat(c[iO25]);
           if (iU25 >= 0 && parseFloat(c[iU25]) > 1) userOdds.under25 = parseFloat(c[iU25]);
@@ -175,12 +166,20 @@ export default function StandardLabPanel() {
               t.brier += (an.probs[k] - (k === o ? 1 : 0)) ** 2;
           }
 
+          let flagKey: string | null = null, flagOdds: number | null = null, flagEv: number | null = null;
+          let band: 'lo' | 'mid' | 'hi' | null = null;
+          let gs = 0, flagHit: boolean | null = null, flagRawPL = 0, flagGuardedPL = 0;
           const flag = ext.topEvBets.length ? ext.topEvBets[0] : null;
           if (flag && flag.odds > 1) {
             const s = settleKey(flag.key, hg, ag);
             if (s !== null) {
-              const gs = guardedStake(flag.ev, flag.odds);
-              const bkt: 'lo' | 'mid' | 'hi' = flag.ev > 0.06 ? 'hi' : flag.ev > 0.03 ? 'mid' : 'lo';
+              flagKey = flag.key; flagOdds = flag.odds; flagEv = flag.ev;
+              band = bandOf(flag.ev);
+              gs = guardedStakeFromEv(flag.ev, flag.odds);
+              flagHit = s;
+              flagRawPL = s ? flag.odds - 1 : -1;
+              flagGuardedPL = gs <= 0 ? 0 : (s ? (flag.odds - 1) * gs : -gs);
+              const bkt: 'lo' | 'mid' | 'hi' = band ?? 'lo';
               for (const t of [rep, lg]) {
                 t.flags++;
                 t.flagHits += s ? 1 : 0;
@@ -199,10 +198,23 @@ export default function StandardLabPanel() {
               }
             }
           }
+
+          ledger.push({
+            file: fileName, line: rep.total,
+            fixture: `${date}|${match.home}|${match.away}|${div}`,
+            div, date, home: match.home, away: match.away,
+            odds: { h, d, a }, probs: { ...an.probs }, pick: an.pick,
+            pickOdds, pickEv: an.probs[an.pick] * pickOdds - 1,
+            pickHit: hit, pickPL: hit ? pickOdds - 1 : -1,
+            flagKey, flagOdds, flagEv, band, guardStake: gs,
+            flagHit, flagRawPL, flagGuardedPL, runAt,
+          });
         } catch { /* skip malformed */ }
       }
       await new Promise((r) => setTimeout(r, 0));
     }
+
+    appendLedger(ledger);
 
     const prev = agg ?? { files: 0, names: [], overall: blank(), leagues: {} };
     const next: AggState = {
@@ -221,11 +233,23 @@ export default function StandardLabPanel() {
   };
 
   const reset = () => {
-    if (window.confirm('Reset the cumulative Standard Lab evidence? This clears all stacked seasons.')) {
+    if (window.confirm('Reset the cumulative Standard Lab evidence AND the bet-by-bet ledger? This clears all stacked seasons.')) {
       localStorage.removeItem(LS_KEY);
+      clearLedger();
       setAgg(null);
       setLast(null);
     }
+  };
+
+  const exportLedger = () => {
+    const csv = ledgerToCsv(loadLedger());
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const aEl = document.createElement('a');
+    aEl.href = url;
+    aEl.download = 'atlas_stdlab_ledger.csv';
+    aEl.click();
+    URL.revokeObjectURL(url);
   };
 
   const card = (v: string, l: string, tone = 'text-zinc-100') => (
@@ -275,6 +299,12 @@ export default function StandardLabPanel() {
   );
 
   const guardDelta = agg ? agg.overall.flagProfitGuarded - agg.overall.flagProfit : 0;
+  const recon = reconcileLedger(loadLedger());
+  const reconOk = agg
+    ? Math.abs(recon.flagRawPL - agg.overall.flagProfit) < 0.05
+      && Math.abs(recon.flagGuardedPL - agg.overall.flagProfitGuarded) < 0.05
+      && recon.flags === agg.overall.flags
+    : false;
 
   return (
     <div className="space-y-4">
@@ -291,6 +321,10 @@ export default function StandardLabPanel() {
                 Reset aggregate
               </button>
             )}
+            <button onClick={exportLedger}
+              className="rounded-lg border border-emerald-500/30 px-2 py-1 text-[10px] text-emerald-400 hover:bg-emerald-500/10">
+              Export ledger CSV
+            </button>
             <button onClick={() => fileRef.current?.click()}
               className="rounded-lg border border-zinc-700 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-800">
               Upload season CSV
@@ -299,7 +333,10 @@ export default function StandardLabPanel() {
           <input ref={fileRef} type="file" accept=".csv" className="hidden"
             onChange={async (e) => {
               const f = e.target.files?.[0];
-              if (f) run(await f.text(), f.name);
+              if (!f) return;
+              if (agg?.names.includes(f.name)
+                && !window.confirm('Duplicate upload detected — aggregates AND ledger will double-count. Continue?')) return;
+              run(await f.text(), f.name);
             }} />
         </div>
         <div className="text-[10px] text-zinc-500">
@@ -315,8 +352,23 @@ export default function StandardLabPanel() {
         <>
           {block(`Cumulative — ${agg.files} file${agg.files > 1 ? 's' : ''}`, agg.overall)}
 
+          <div className={`rounded-xl border p-3 ${reconOk ? 'border-emerald-500/25' : 'border-amber-500/40'} bg-zinc-900/60`}>
+            <h4 className="mb-1 text-[10px] font-bold uppercase text-emerald-300">
+              LEDGER RECONCILIATION (audit P0) {reconOk ? '— reconciles ✓' : '— mismatch (check duplicates/resets)'}
+            </h4>
+            <div className="grid grid-cols-2 gap-4 text-[11px] text-zinc-300 md:grid-cols-4">
+              <div><div className="text-zinc-500">Ledger rows</div><div className="text-sm font-bold tabular-nums">{recon.rows}</div></div>
+              <div><div className="text-zinc-500">Flags (ledger / agg)</div><div className="text-sm font-bold tabular-nums">{recon.flags} / {agg.overall.flags}</div></div>
+              <div><div className="text-zinc-500">Raw P/L (ledger / agg)</div><div className="text-sm font-bold tabular-nums">{recon.flagRawPL.toFixed(1)} / {agg.overall.flagProfit.toFixed(1)}</div></div>
+              <div><div className="text-zinc-500">Guarded P/L (ledger / agg)</div><div className="text-sm font-bold tabular-nums">{recon.flagGuardedPL.toFixed(1)} / {agg.overall.flagProfitGuarded.toFixed(1)}</div></div>
+            </div>
+            <div className="mt-1 text-[9px] text-zinc-500">
+              Ledger records prediction-time info only (odds, probs, EV, guard decision) plus settlement. Export CSV for the audit appendix.
+            </div>
+          </div>
+
           <div className="rounded-xl border border-fuchsia-500/25 bg-zinc-900/60 p-3">
-            <h4 className="mb-1 text-[10px] font-bold uppercase text-fuchsia-300">🛡️ Band-aware stake guard impact (Part 94 applied)</h4>
+            <h4 className="mb-1 text-[10px] font-bold uppercase text-fuchsia-300">🛡 Band-aware stake guard impact (Part 94 applied)</h4>
             <div className="grid grid-cols-2 gap-4 text-[11px] text-zinc-300 md:grid-cols-4">
               <div>
                 <div className="text-zinc-500">Raw flat P/L</div>

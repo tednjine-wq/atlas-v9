@@ -65,7 +65,7 @@ export function reconcileLedger(rows: LedgerRow[]): LedgerTotals {
     t.flagHits += hit ? 1 : 0;
     t.flagRawPL += r.flagRawPL;
     t.flagGuardedPL += r.flagGuardedPL;
-    if (r.band) {
+    if (r.band && r.guardStake > 0) {
       const b = t.bands[r.band];
       b.n++; b.hits += hit ? 1 : 0; b.rawPL += r.flagRawPL; b.guardedPL += r.flagGuardedPL;
     }
