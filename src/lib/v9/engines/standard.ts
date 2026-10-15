@@ -69,7 +69,7 @@ export function atlasAnalyseV9(
   const cal = extra.count >= 3
     ? calibrateLambdaMultiMarket(h, d, a, DC_RHO_STANDARD, extra, match.prior)
     : baseCal;
-  const rho = DC_RHO_STANDARD + learnedParams.rhoAdjust;
+  const rho = DC_RHO_STANDARD; // v9.10 audit P0: production rho frozen at -0.13; rhoAdjust is research-only
 
   const sm = buildScoreMatrix(cal.lambdaH, cal.lambdaA, rho);
   const dc = outcomeProbs(sm.raw, sm.sum, sm.size);
