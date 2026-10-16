@@ -51,3 +51,5 @@ tools/
 audit.json
 
 public/data/jackpot_history.txt
+
+bench-data/
