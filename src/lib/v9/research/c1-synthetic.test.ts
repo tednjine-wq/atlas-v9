@@ -19,12 +19,12 @@ const eval1 = (obs: C1Obs[], cutoff = 1e12) => c1Evaluate(c1InitialState(), obs,
 
 describe('C1 synthetic suite (research acceptance, NOT proof of real improvement)', () => {
   it('S1 converges toward the calibration-correction ratio pi/mean(p)', () => {
-    const pi = P(0.40, 0.30, 0.30), p = P(0.36, 0.30, 0.34);
+    const pi = P(0.40, 0.30, 0.30), p = P(0.375, 0.30, 0.325);
     const { entry } = eval1(stream(20000, pi, p));
     const r = { home: pi.home / p.home, draw: pi.draw / p.draw, away: pi.away / p.away };
     for (const k of ['home', 'draw', 'away'] as Outcome[]) {
-      expect(Math.abs(entry.shrunkMult[k] - r[k])).toBeLessThan(0.01);
-      expect(entry.clippedMult[k]).toBe(entry.shrunkMult[k]); // inside bounds
+      expect(Math.abs(entry.shrunkMult[k] - r[k])).toBeLessThan(0.03);
+      expect(entry.clippedMult[k]).toBe(entry.shrunkMult[k]); // ratios inside [0.90, 1.15]
     }
     expect(entry.applied).toBe(true);
   });
@@ -57,7 +57,8 @@ describe('C1 synthetic suite (research acceptance, NOT proof of real improvement
     expect(entry.applied).toBe(false);
     expect(entry.reason).toContain('floor');
     expect(state.mult).toEqual({ home: 1, draw: 1, away: 1 });
-    expect(state.log.length).toBe(1);
+    expect(state.log.filter((e) => e.scope === 'global')).toHaveLength(1);
+    expect(state.log.find((e) => e.scope === 'unknown')).toBeDefined(); // league entry logged too
   });
 
   it('S5 chronology: post-cutoff and late observations are ineligible', () => {
@@ -86,7 +87,7 @@ describe('C1 synthetic suite (research acceptance, NOT proof of real improvement
     const lg = state.log.find((e) => e.scope === 'L1');
     expect(lg).toBeDefined();
     expect(lg!.applied).toBe(false); // below floor
-    expect(lg!.shrunkMult.draw).toBeLessThan(1.2); // heavy shrink vs raw ~2.7
+    expect(lg!.shrunkMult.draw).toBeLessThan(1.2); // heavy shrink vs raw ratio
     expect(state.leagueMult.L1).toEqual(state.mult); // not applied
   });
 

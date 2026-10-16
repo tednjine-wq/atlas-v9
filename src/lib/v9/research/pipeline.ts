@@ -2,11 +2,13 @@
 // Research pipeline: chronological Elo + C1 + prediction
 // snapshots at explicit cutoffs. Pure function of (data,
 // cutoffs) so the no-look-ahead property is testable.
-// Imports pure math only; NEVER engines/store/staking.
+// RESEARCH-ONLY lambda mapping (documented O(1) moment-style
+// approximation) — deliberately NOT production calibrateLambda:
+// keeps the pipeline fast and fully isolated. Benchmark batch
+// adds the production-equivalent path separately.
 // ============================================================
 import type { Outcome } from '../atlas-types';
 import { buildScoreMatrix, outcomeProbs } from '../math/dixon-coles';
-import { calibrateLambda } from '../math/calibration';
 import { C1_DEFAULTS, applyC1Mult, c1Evaluate, c1InitialState, finalMultFor } from './c1-recalibration';
 import type { C1Config, C1Obs, C1State } from './c1-recalibration';
 
@@ -25,7 +27,9 @@ export interface PipelineSnapshot {
   predictions: ResearchPrediction[];
 }
 
-export const ELO_INIT = 1500, ELO_K = 20, ELO_HFA = 60, WINDOW_MS = 7 * 86400000;
+export const ELO_INIT = 1500, ELO_K = 20, ELO_HFA = 60, WINDOW_MS = 14 * 86400000;
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 export function eloExpected(rh: number, ra: number): number {
   return 1 / (1 + Math.pow(10, -(rh + ELO_HFA - ra) / 400));
@@ -44,11 +48,14 @@ export function eloUpdateStep(elo: Record<string, number>, home: string, away: s
   return next;
 }
 
-// Market-anchored DC grid + small documented Elo tilt (10% of the
-// Elo-home-expectation gap). Research blend, not production behaviour.
 export function baseProbs(m: HistMatch, elo: Record<string, number>, rho: number): Record<Outcome, number> {
-  const cal = calibrateLambda(m.h, m.d, m.a, rho, undefined);
-  const sm = buildScoreMatrix(cal.lambdaH, cal.lambdaA, rho);
+  const invH = 1 / m.h, invD = 1 / m.d, invA = 1 / m.a;
+  const z0 = invH + invD + invA;
+  const ph = invH / z0, pa = invA / z0;
+  const gap = ph - pa;
+  const lh = clamp(1.35 + 0.9 * gap, 0.2, 3.5);
+  const la = clamp(1.35 - 0.9 * gap, 0.2, 3.5);
+  const sm = buildScoreMatrix(lh, la, rho);
   const grid = outcomeProbs(sm.raw, sm.sum);
   const e = eloExpected(elo[m.home] ?? ELO_INIT, elo[m.away] ?? ELO_INIT);
   const tilt = 0.10 * (e - 0.5);

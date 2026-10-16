@@ -257,7 +257,7 @@ export const useAtlasStore = create<AtlasState>()(
           });
         if (!legs.length) return;
         const r = simulateParlay(legs);
-        set((parlaySim => ({ parlaySim: { ...r, legs: legs.length } }))());
+        set({ parlaySim: { ...r, legs: legs.length } });
       },
 
       fetchApiPicks: async () => {
