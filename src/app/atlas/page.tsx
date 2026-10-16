@@ -1,4 +1,5 @@
 'use client';
+import '@/lib/v9/evidence/ledger-tap';
 import { useEffect, useRef, useState } from 'react';
 import { useAtlasStore } from '@/lib/v9/store/atlas-store';
 import MatchCard from '@/components/atlas/MatchCard';
