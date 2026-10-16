@@ -4,6 +4,9 @@
 // odds per prediction and auto-computes CLV (no manual typing).
 // Matches live matches OR stored prediction labels (clear-safe).
 // RULES 4/6/7/10.3 preserved.
+// v9.10 Phase B2: prospective-evidence integrity — late stamp,
+// same-day dedupe (visible counter), schema-v2 export/import
+// with ledger. Prediction/staking math untouched.
 // ============================================================
 'use client';
 import { create } from 'zustand';
@@ -19,6 +22,10 @@ import { buildScoreMatrix, outcomeProbs } from '../math/dixon-coles';
 import { adaptiveSimulate, simulateParlay } from '../math/adaptive-mc';
 import { atlasAnalyseJackpotV9 } from '../engines/jackpot';
 import { idbGet, idbSet } from '../storage/idb';
+import {
+  EVIDENCE_SCHEMA_VERSION, dedupeKey, isLatePrediction, parseEvidence,
+} from '../evidence/evidence-schema';
+import { appendLedger, clearLedger, loadLedger } from '../analysis/lab-ledger';
 
 export interface FeedbackEntry {
   id: string; ts: number; matchLabel: string;
@@ -57,6 +64,7 @@ interface AtlasState {
   simsRunning: boolean;
   marketPosteriors: MarketPosteriors;
   predictionLabels: Record<string, string>;
+  duplicateSkips: number;
 
   addMatch: () => void;
   removeMatch: (id: string) => void;
@@ -103,6 +111,7 @@ export const useAtlasStore = create<AtlasState>()(
       simsRunning: false,
       marketPosteriors: {},
       predictionLabels: {},
+      duplicateSkips: 0,
 
       addMatch: () => set((s) => ({ matches: [...s.matches, emptyMatch(crypto.randomUUID())] })),
       removeMatch: (id) => set((s) => ({ matches: s.matches.filter((m) => m.id !== id) })),
@@ -115,9 +124,21 @@ export const useAtlasStore = create<AtlasState>()(
       })),
       setPhi: (v) => set({ phi: v }),
 
+      // B2: stamp evidence-integrity fields; block same-day duplicate
+      // fixtures arriving under a different match id (re-paste flows
+      // update via snapshotClosing instead, preserving entry odds).
       recordPrediction: (match, a) => {
         const h = parseFloat(match.h), d = parseFloat(match.d), aw = parseFloat(match.a);
         const entryOdds = h > 1 && d > 1 && aw > 1 ? { home: h, draw: d, away: aw } : undefined;
+        const now = Date.now();
+        const evKey = dedupeKey({
+          home: match.home, away: match.away, league: match.league,
+          gameType: match.gameType, timestamp: now,
+        });
+        const late = isLatePrediction(now, match.kickoff);
+        const dup = get().predictions.some((p) => p.matchId !== match.id
+          && (p as PredictionRecord & { evKey?: string }).evKey === evKey);
+        if (dup) { set((s) => ({ duplicateSkips: s.duplicateSkips + 1 })); return; }
         set((s) => ({
           predictionLabels: { ...s.predictionLabels, [match.id]: `${match.home} v ${match.away}` },
           predictions: [
@@ -125,8 +146,8 @@ export const useAtlasStore = create<AtlasState>()(
             {
               id: crypto.randomUUID(), matchId: match.id, gameType: match.gameType,
               pick: a.pick, confidence: a.confidence, probs: { ...a.probs },
-              sofTriggered: a.sofTriggered, margin: a.margin, timestamp: Date.now(),
-              entryOdds, label: `${match.home} v ${match.away}`,
+              sofTriggered: a.sofTriggered, margin: a.margin, timestamp: now,
+              entryOdds, label: `${match.home} v ${match.away}`, evKey, late,
             } as PredictionRecord,
           ],
         }));
@@ -236,7 +257,7 @@ export const useAtlasStore = create<AtlasState>()(
           });
         if (!legs.length) return;
         const r = simulateParlay(legs);
-        set({ parlaySim: { ...r, legs: legs.length } });
+        set((parlaySim => ({ parlaySim: { ...r, legs: legs.length } }))());
       },
 
       fetchApiPicks: async () => {
@@ -283,30 +304,40 @@ export const useAtlasStore = create<AtlasState>()(
         return { feedback: newFeedback, marketPosteriors: newPosteriors };
       }),
 
+      // B2: schema-v2 envelope (ledger included); all legacy fields kept
       exportSession: () => JSON.stringify({
-        version: 'atlas_v9', exportedAt: Date.now(),
+        version: 'atlas_v9', schemaVersion: EVIDENCE_SCHEMA_VERSION, exportedAt: Date.now(),
         matches: get().matches, results: get().results, phi: get().phi,
         predictions: get().predictions, feedback: get().feedback,
         standardParams: get().standardParams, jackpotParams: get().jackpotParams,
         recalibrationLog: get().recalibrationLog,
         marketPosteriors: get().marketPosteriors,
         predictionLabels: get().predictionLabels,
+        ledger: loadLedger(),
       }, null, 2),
 
+      // B2: predictions validated/migrated through parseEvidence; ledger
+      // restored only into an empty local ledger (never clobbers evidence)
       importSession: (json) => {
         try {
           const data = JSON.parse(json);
           const sp = data.standardParams?.version === PARAMS_VERSION ? data.standardParams : defaultParams();
           const jp = data.jackpotParams?.version === PARAMS_VERSION ? data.jackpotParams : defaultParams();
+          const parsed = parseEvidence(json);
+          const preds = parsed.ok && parsed.data ? parsed.data.predictions : (data.predictions ?? []);
           set({
             matches: data.matches ?? [], results: data.results ?? {},
             phi: typeof data.phi === 'number' ? data.phi : 0.10,
-            predictions: data.predictions ?? [], feedback: data.feedback ?? [],
+            predictions: preds, feedback: data.feedback ?? [],
             standardParams: sp, jackpotParams: jp,
             recalibrationLog: data.recalibrationLog ?? [],
             marketPosteriors: data.marketPosteriors ?? {},
             predictionLabels: data.predictionLabels ?? {},
           });
+          if (parsed.ok && parsed.data && parsed.data.ledger.length && !loadLedger().length) {
+            clearLedger();
+            appendLedger(parsed.data.ledger);
+          }
           return true;
         } catch { return false; }
       },

@@ -30,6 +30,11 @@ function Row({ label, m, color }: { label: string; m: CalibrationMetrics; color:
   );
 }
 
+function DupSkips() {
+  const n = useAtlasStore((s) => s.duplicateSkips);
+  return <>{n}</>;
+}
+
 const hasOdds = (p: PredictionRecord): boolean => {
   const e = (p as PredictionRecord & { entryOdds?: Record<string, number> }).entryOdds;
   return !!e && e.home > 1 && e.draw > 1 && e.away > 1;
@@ -39,11 +44,14 @@ interface EngineBlock {
   engine: string;
   records: number; resolved: number; withProbs: number; oddsEligible: number;
   testN: number;
+  late: number;
   market: CalibrationMetrics; independent: CalibrationMetrics; hybrid: CalibrationMetrics;
   dates: { start: string; end: string } | null;
 }
 
-function buildBlock(engine: string, recs: PredictionRecord[]): EngineBlock {
+function buildBlock(engine: string, recsAll: PredictionRecord[]): EngineBlock {
+  const late = recsAll.filter((r) => (r as PredictionRecord & { late?: boolean }).late).length;
+  const recs = recsAll.filter((r) => !(r as PredictionRecord & { late?: boolean }).late);
   const sorted = [...recs].sort((a, b) => a.timestamp - b.timestamp);
   const resolved = sorted.filter((r) => r.result);
   const withProbs = resolved.filter((r) => r.probs);
@@ -54,6 +62,7 @@ function buildBlock(engine: string, recs: PredictionRecord[]): EngineBlock {
     records: sorted.length, resolved: resolved.length,
     withProbs: withProbs.length, oddsEligible: oddsEligible.length,
     testN: test.length,
+    late,
     market: evaluateMarketBaseline(test),
     independent: evaluateIndependentModel(test),
     hybrid: evaluateHybridModel(test),
@@ -68,7 +77,7 @@ function EngineTable({ b }: { b: EngineBlock }) {
   return (
     <div className="space-y-2">
       <div className="text-[11px] font-bold text-zinc-300">
-        {b.engine.toUpperCase()} — funnel: {b.records} records → {b.resolved} resolved → {b.withProbs} with probs → {b.oddsEligible} odds-eligible
+        {b.engine.toUpperCase()} — funnel: {b.records} records → {b.resolved} resolved → {b.withProbs} with probs → {b.oddsEligible} odds-eligible · {b.late} late excluded
         {b.dates && <span className="text-zinc-500"> · test period {b.dates.start}–{b.dates.end} (test records {b.testN})</span>}
       </div>
       {b.testN < 5 ? (
@@ -125,6 +134,9 @@ export default function OutOfSamplePanel() {
         </p>
         <p className="text-[10px] text-zinc-600 mt-1">
           Market Baseline / ROI show n/a when records carry no usable entry odds. Independent = fixed-λ naive (always-home strawman). ROI/P&L = flat 1u on each model&apos;s argmax at recorded entry odds. Any positive ROI for the naive comparator at small n is small-sample luck, not skill. Never rank models on these tables until per-engine n reaches the pre-registered milestone.
+        </p>
+        <p className="text-[10px] text-zinc-600 mt-1">
+          Late (post-kickoff) records are excluded from prospective metrics. Duplicate same-day fixtures skipped this session: <DupSkips />.
         </p>
       </div>
       {blocks.map((b) => <EngineTable key={b.engine} b={b} />)}
