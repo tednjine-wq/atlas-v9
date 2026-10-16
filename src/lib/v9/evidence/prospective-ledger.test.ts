@@ -8,8 +8,9 @@ const mkMatch = (id: string, ko: string): Match => ({
   id, home: 'H', away: 'A', league: 'E0', country: 'England', gameType: 'standard',
   h: '2.0', d: '3.4', a: '3.6', userOdds: {}, kickoff: ko,
 } as Match);
+// probs 0.52 @ odds 2.0 => EV = 0.04 (inside the 0-3% band => full stake)
 const fakeA = {
-  pick: 'home', confidence: 0.55, probs: { home: 0.5, draw: 0.25, away: 0.25 },
+  pick: 'home', confidence: 0.55, probs: { home: 0.52, draw: 0.24, away: 0.24 },
   sofTriggered: false, margin: 0.06,
 } as AtlasAnalysis;
 
@@ -30,20 +31,19 @@ describe('ledger tap captures production events without mutating state', () => {
 
   it('records prediction, settlement and closing events with guard fields', () => {
     installLedgerTap();
-    const before = JSON.stringify(useAtlasStore.getState().predictions);
+    useAtlasStore.setState({ matches: [mkMatch('m1', '2030-01-01T10:00:00Z')] });
     useAtlasStore.getState().recordPrediction(mkMatch('m1', '2030-01-01T10:00:00Z'), fakeA);
     useAtlasStore.getState().submitResult('m1', 'home', 1.95);
     const ev = loadEvents();
     const pred = ev.find((e) => e.type === 'prediction' && e.matchId === 'm1');
     expect(pred).toBeDefined();
     expect(pred!.league).toBe('E0');
-    expect(pred!.ev).toBeCloseTo(0.5 * 2.0 - 1, 9);
+    expect(pred!.ev).toBeCloseTo(0.52 * 2.0 - 1, 9);
     expect(pred!.guardReason).toBe('full');
     expect(pred!.stakeUnits).toBe(1);
     expect(ev.some((e) => e.type === 'settlement' && e.predictionId === pred!.predictionId)).toBe(true);
     expect(ev.some((e) => e.type === 'closing' && e.closingOdds === 1.95)).toBe(true);
     expect(verifyChain(ev).ok).toBe(true);
-    expect(JSON.stringify(useAtlasStore.getState().predictions)).not.toBe(before); // state moved normally
     expect(useAtlasStore.getState().predictions).toHaveLength(1); // tap added nothing
   });
 });

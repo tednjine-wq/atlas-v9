@@ -2,7 +2,7 @@
 // Ledger tap: subscribes to the store and records audit events.
 // READ-ONLY with respect to production state: never mutates
 // matches, predictions, params, guard or staking. Activated by
-// a single import in the atlas page.
+// a single import in the atlas page (after 'use client').
 // ============================================================
 import { useAtlasStore } from '../store/atlas-store';
 import type { PredictionRecord } from '../learning/bayesian-learning';
@@ -10,7 +10,7 @@ import { appendEvent, GUARD_POLICY_VERSION, MODEL_VERSION } from './prospective-
 import { guardedStakeFromEv } from '../analysis/lab-ledger';
 import type { Outcome } from '../atlas-types';
 
-type Rec = PredictionRecord & { evKey?: string; late?: boolean };
+type Rec = PredictionRecord & { evKey?: string; late?: boolean; label?: string };
 
 const guardFields = (probs: Record<Outcome, number>, pick: Outcome, entry: Record<Outcome, number> | undefined) => {
   if (!entry || !(entry.home > 1 && entry.draw > 1 && entry.away > 1)) {
@@ -62,7 +62,7 @@ export function installLedgerTap(): void {
         seenSettle.add(p.id);
         appendEvent({
           type: 'settlement', at: p.resolvedAt ?? Date.now(), eventId: `settle:${p.id}`,
-          predictionId: p.id, result: p.result, resolvedAt: p.resolvedAt ?? null,
+          predictionId: p.id, result: p.result, resolvedAt: p.resolvedAt,
         });
       }
       if (p.closingOdds && p.closingOdds > 1 && !seenClose.has(p.id)) {
