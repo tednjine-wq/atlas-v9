@@ -111,7 +111,7 @@ export default function OutOfSamplePanel() {
   if (!blocks) {
     return (
       <div className="rounded-xl border border-zinc-700 bg-zinc-900/60 p-4 text-xs text-zinc-500">
-        Out-of-Sample Backtest requires at least 30 resolved predictions to generate a statistically significant test period.
+        Out-of-Sample Backtest requires at least 30 resolved predictions before hold-out metrics are shown. 30 is a minimum viability floor, not a statistical-significance guarantee.
       </div>
     );
   }
@@ -121,10 +121,10 @@ export default function OutOfSamplePanel() {
       <div>
         <h3 className="text-sm font-bold text-indigo-300">OUT-OF-SAMPLE BACKTEST (§F / §G) — per-engine, chronological</h3>
         <p className="text-[10px] text-rose-400 mt-1">
-          * Metrics computed strictly on each engine&apos;s held-out test slice (last 20% chronological). No parameters were tuned on this data. Engines never share records.
+          * Metrics computed strictly on each engine&apos;s held-out test slice (last 20% chronological). No parameters were tuned on this data. Engines never share records. Per-model n is displayed; at n &lt; 100 all differences are indicative only (accuracy 95% CI is roughly +/-1.96*sqrt(p(1-p)/n), i.e. about +/-15 points at n=20). No significance is claimed at any sample size; at least 100 resolved per engine is a pre-registered evidence milestone, not a significance threshold.
         </p>
         <p className="text-[10px] text-zinc-600 mt-1">
-          Market Baseline / ROI show n/a when records carry no usable entry odds. Independent = fixed-λ naive (always-home strawman). ROI/P&L = flat 1u on each model&apos;s argmax at recorded entry odds. Small n: treat differences as noise.
+          Market Baseline / ROI show n/a when records carry no usable entry odds. Independent = fixed-λ naive (always-home strawman). ROI/P&L = flat 1u on each model&apos;s argmax at recorded entry odds. Any positive ROI for the naive comparator at small n is small-sample luck, not skill. Never rank models on these tables until per-engine n reaches the pre-registered milestone.
         </p>
       </div>
       {blocks.map((b) => <EngineTable key={b.engine} b={b} />)}

@@ -86,12 +86,7 @@ function settleKey(key: string, i: number, j: number): boolean | null {
   return null;
 }
 
-function guardedStake(ev: number, odds: number): number {
-  if (ev > 0.06) return 0;
-  let s = 1;
-  if (odds < 1.5) s *= 0.5;
-  return s;
-}
+
 
 export default function StandardLabPanel() {
   const fileRef = useRef<HTMLInputElement>(null);

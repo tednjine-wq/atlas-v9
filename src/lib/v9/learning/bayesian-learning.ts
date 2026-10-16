@@ -112,7 +112,7 @@ export function recalibrate(
   fresh.trend = fresh.recentHitRate > olderRate + 0.03 ? 'improving'
     : fresh.recentHitRate < olderRate - 0.03 ? 'declining' : 'stable';
 
-  return { params: fresh, message: `Recalibrated on ${resolved.length} results (beta-binomial, decay=${DECAY})` };
+  return { params: fresh, message: `Recalibration evaluated on (no-op: production Jackpot engine frozen under Rule 6) ${resolved.length} results (beta-binomial, decay=${DECAY})` };
 }
 
 export function applyLearnedAdjustments(

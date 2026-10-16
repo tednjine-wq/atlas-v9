@@ -1,4 +1,6 @@
 // v9.10 review §C: SSRF guard for server-side fetching.
+// v9.10 audit 8c: body cap enforced DURING streaming (immune to missing or
+// spoofed Content-Length); abort timer now covers headers AND body read.
 import { lookup } from 'node:dns/promises';
 import { isIPv4, isIPv6 } from 'node:net';
 
@@ -65,12 +67,31 @@ export async function assertPublicDns(host: string): Promise<void> {
   }
 }
 
+// Stream-counted body cap: never buffers more than MAX_BODY_BYTES, and a
+// missing or lying Content-Length cannot bypass it.
 async function readCapped(res: Response): Promise<string> {
   const cl = res.headers.get('content-length');
   if (cl && parseInt(cl, 10) > MAX_BODY_BYTES) throw new SsrfError('TOO_BIG', 'Response too large');
-  const buf = await res.arrayBuffer();
-  if (buf.byteLength > MAX_BODY_BYTES) throw new SsrfError('TOO_BIG', 'Response too large');
-  return Buffer.from(buf).toString('utf8');
+  if (!res.body) {
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength > MAX_BODY_BYTES) throw new SsrfError('TOO_BIG', 'Response too large');
+    return Buffer.from(buf).toString('utf8');
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      void reader.cancel().catch(() => undefined);
+      throw new SsrfError('TOO_BIG', 'Response too large');
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 export async function safeFetchHtml(rawUrl: string): Promise<string> {
@@ -79,21 +100,33 @@ export async function safeFetchHtml(rawUrl: string): Promise<string> {
     await assertPublicDns(current.hostname);
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
-    let res: Response;
     try {
-      res = await fetch(current, { redirect: 'manual', signal: ctl.signal, headers: { 'user-agent': 'atlas-research/9.10' } });
-    } catch { throw new SsrfError('UPSTREAM', 'Upstream request failed'); } finally { clearTimeout(timer); }
-    if (res.status >= 300 && res.status < 400) {
-      const loc = res.headers.get('location');
-      if (!loc) throw new SsrfError('BAD_REDIRECT', 'Redirect without location');
-      if (hop === MAX_REDIRECTS) throw new SsrfError('BAD_REDIRECT', 'Too many redirects');
-      current = validateUrl(new URL(loc, current).toString());
-      continue;
+      let res: Response;
+      try {
+        res = await fetch(current, { redirect: 'manual', signal: ctl.signal, headers: { 'user-agent': 'atlas-research/9.10' } });
+      } catch {
+        throw new SsrfError(ctl.signal.aborted ? 'TIMEOUT' : 'UPSTREAM', ctl.signal.aborted ? 'Upstream timed out' : 'Upstream request failed');
+      }
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get('location');
+        if (!loc) throw new SsrfError('BAD_REDIRECT', 'Redirect without location');
+        if (hop === MAX_REDIRECTS) throw new SsrfError('BAD_REDIRECT', 'Too many redirects');
+        current = validateUrl(new URL(loc, current).toString());
+        continue;
+      }
+      if (!res.ok) throw new SsrfError('UPSTREAM', 'Upstream request failed');
+      const ct = res.headers.get('content-type') ?? '';
+      if (!/text\/html|application\/xhtml\+xml/i.test(ct)) throw new SsrfError('BAD_TYPE', 'Unexpected content type');
+      try {
+        return await readCapped(res);
+      } catch (e) {
+        if (e instanceof SsrfError) throw e;
+        if (ctl.signal.aborted) throw new SsrfError('TIMEOUT', 'Upstream timed out');
+        throw new SsrfError('UPSTREAM', 'Upstream request failed');
+      }
+    } finally {
+      clearTimeout(timer);
     }
-    if (!res.ok) throw new SsrfError('UPSTREAM', 'Upstream request failed');
-    const ct = res.headers.get('content-type') ?? '';
-    if (!/text\/html|application\/xhtml\+xml/i.test(ct)) throw new SsrfError('BAD_TYPE', 'Unexpected content type');
-    return readCapped(res);
   }
   throw new SsrfError('BAD_REDIRECT', 'Too many redirects');
 }

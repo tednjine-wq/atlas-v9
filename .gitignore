@@ -46,3 +46,8 @@ next-env.d.ts
 tools/scrapes/
 
 tools/scrapes/
+
+tools/
+audit.json
+
+public/data/jackpot_history.txt

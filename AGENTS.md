@@ -65,3 +65,11 @@ Import card → curate → send → paper bet → 📸 re-paste ~1h pre-kickoff 
 
 ## 12. Known limits / future ideas
 DC lambdas come from one match's odds (market-anchored); league-level posteriors, radar week-over-week, The-Odds-API auto-closing (needs key+quota) remain optional futures. Void legs excluded; orphan pre-v9.4 predictions unresolvable by name (harmless).
+
+## 13. v9.10 audit evidence (14/10/2026, baseline 619839f)
+- Guard ledger reconciles exactly (1,752 rows; 1,345 flags; raw -35.8u -> guarded +15.2u) but is IN-SAMPLE: the guard was designed on these same seasons; per-league delta D1 = -6.8u. Production guard retained, labelled in-sample.
+- Hold-outs (per-engine, chronological): Standard n=20/model (8/29-10/3/2026): Market 0.774/1.260/25.0%; naive 0.685/1.127/30.0%; Hybrid 0.756/1.238/15.0% -> no ranking possible at n=20. Jackpot hold-out empty (<5 resolved in test slice).
+- CLV -0.3% over 268 bets, 16.8% beat the close -> no pricing edge demonstrated.
+- Rho frozen everywhere: Standard -0.13 / Jackpot -0.08; rhoAdjust is research-only; regression tests enforce isolation.
+- Jackpot recalibration log entries are no-ops (Rule 6); relabelled in code.
+- All experiments (evidence-weighted recalibration, Jackpot learning, Kelly alternatives) are research-only behind the promotion gate. No predictive-improvement claim stands.
