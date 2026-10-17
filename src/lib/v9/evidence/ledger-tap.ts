@@ -3,6 +3,8 @@
 // READ-ONLY with respect to production state: never mutates
 // matches, predictions, params, guard or staking. Activated by
 // a single import in the atlas page (after 'use client').
+// R7: records whose prediction timestamp predates tap install
+// are labelled backfill (fixes the IndexedDB rehydrate race).
 // ============================================================
 import { useAtlasStore } from '../store/atlas-store';
 import type { PredictionRecord } from '../learning/bayesian-learning';
@@ -24,10 +26,12 @@ const guardFields = (probs: Record<Outcome, number>, pick: Outcome, entry: Recor
 };
 
 let installed = false;
+let INSTALL_TS = 0;
 
 export function installLedgerTap(): void {
   if (installed) return;
   installed = true;
+  INSTALL_TS = Date.now();
   const seenPred = new Set<string>();
   const seenSettle = new Set<string>();
   const seenClose = new Set<string>();
@@ -35,12 +39,13 @@ export function installLedgerTap(): void {
   const capture = (p: Rec, backfilled: boolean) => {
     if (seenPred.has(p.id)) return;
     seenPred.add(p.id);
+    const isBack = backfilled || p.timestamp < INSTALL_TS;
     const s = useAtlasStore.getState();
     const match = s.matches.find((m) => m.id === p.matchId);
     const g = guardFields(p.probs, p.pick, p.entryOdds);
     appendEvent({
-      type: backfilled ? 'backfill' : 'prediction',
-      at: backfilled ? p.timestamp : Date.now(),
+      type: isBack ? 'backfill' : 'prediction',
+      at: isBack ? p.timestamp : Date.now(),
       eventId: `pred:${p.id}`,
       predictionId: p.id, matchId: p.matchId, label: p.label,
       league: match?.league ?? null, kickoff: match?.kickoff ?? null,
@@ -48,11 +53,10 @@ export function installLedgerTap(): void {
       entryOdds: p.entryOdds ?? null, oddsSource: 'manual-entry', oddsAt: p.timestamp,
       phi: s.phi, ev: g.ev, guardStake: g.guardStake, guardReason: g.guardReason, stakeUnits: g.stakeUnits,
       modelVersion: MODEL_VERSION, guardPolicyVersion: GUARD_POLICY_VERSION,
-      backfilled: backfilled || undefined,
+      backfilled: isBack || undefined,
     });
   };
 
-  // Backfill existing records as a clearly-labelled secondary cohort.
   for (const p of useAtlasStore.getState().predictions as Rec[]) capture(p, true);
 
   useAtlasStore.subscribe((s) => {
