@@ -70,7 +70,7 @@ export function atlasOver25(h: number, d: number, a: number, rho = -0.13): OuPro
 }
 
 // Truncation / tail-mass audit over the lambda range: 10x10 grid
-// retains >= ~0.9964 at worst (lambda 3.5/3.5); documented bound.
+// retains >= ~0.9934 at worst (lambda 3.5/3.5); test bound 0.99; OU probs normalize by sum.
 export function tailAudit(rho = -0.13): { minSum: number; worstLambda: [number, number] } {
   let minSum = 1; let worst: [number, number] = [0, 0];
   for (let lh = 0.3; lh <= 3.51; lh += 0.1)
