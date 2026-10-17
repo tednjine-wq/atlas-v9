@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { blend, pairedBrierDiff } from './residual-signal';
 import type { ResidualRow } from './residual-signal';
-import type { Outcome } from '../atlas-types';
 
 const P = (h: number, d: number, a: number) => ({ home: h, draw: d, away: a });
 
