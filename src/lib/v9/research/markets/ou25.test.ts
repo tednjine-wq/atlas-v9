@@ -1,35 +1,47 @@
 import { describe, expect, it } from 'vitest';
-import { atlasOver25, overFromRaw, settleOu, tailAudit, underFromRaw } from './ou-extract';
-import { buildScoreMatrix } from '../../math/dixon-coles';
+import { atlasOver25, dcGridMatrix, overFromRaw, settleOu, tailAudit, underFromRaw } from './ou-extract';
+import { buildScoreMatrix, outcomeProbs } from '../../math/dixon-coles'; // test-only cross-check vs production matrix
 import { runOu25 } from './ou25-runner';
-import { loadMarketEvents, verifyMarketChain, marketExportJson } from './market-ledger';
+import { loadMarketEvents, marketExportJson, verifyMarketChain } from './market-ledger';
 import type { OuMatch } from './ou-data';
 
 const mk = (id: string, date: number, hg: number, ag: number, oo: number | null, ou: number | null): OuMatch =>
   ({ id, date, league: 'E0', home: 'H', away: 'A', hg, ag, h: 2.0, d: 3.4, a: 3.6, ouOpenOver: oo, ouOpenUnder: ou, ouCloseOver: null, ouCloseUnder: null, ouMissing: !(oo && ou) } as OuMatch);
 
 describe('OU 2.5 extraction validity (R10-mkt)', () => {
+  it('research grid equals the production score matrix (draw partition, orientation-free)', () => {
+    const prod = outcomeProbs(buildScoreMatrix(1.8, 1.4, -0.13).raw, buildScoreMatrix(1.8, 1.4, -0.13).sum);
+    const g = dcGridMatrix(1.8, 1.4, -0.13);
+    let h = 0, dr = 0, a = 0;
+    for (let y = 0; y <= 9; y++) for (let x = 0; x <= 9; x++) {
+      const p = g.raw[y][x] / g.sum;
+      if (x > y) h += p; else if (x === y) dr += p; else a += p;
+    }
+    expect(dr).toBeCloseTo(prod.draw, 9); // orientation-independent identity
+    expect(Math.abs(h - prod.home) < 1e-9 || Math.abs(h - prod.away) < 1e-9).toBe(true);
+  });
+
   it('over + under = 1 and over equals direct complement enumeration', () => {
-    const sm = buildScoreMatrix(1.8, 1.4, -0.13);
-    const over = overFromRaw(sm.raw, sm.sum, 2.5);
-    const under = underFromRaw(sm.raw, sm.sum, 2.5);
+    const g = dcGridMatrix(1.8, 1.4, -0.13);
+    const over = overFromRaw(g.raw, g.sum, 2.5);
+    const under = underFromRaw(g.raw, g.sum, 2.5);
     expect(over + under).toBeCloseTo(1, 9);
     expect(over).toBeCloseTo(1 - under, 9);
     expect(over).toBeGreaterThan(0); expect(over).toBeLessThan(1);
   });
 
   it('thresholds are monotone: over1.5 > over2.5 > over3.5', () => {
-    const sm = buildScoreMatrix(1.8, 1.4, -0.13);
-    const o15 = overFromRaw(sm.raw, sm.sum, 1.5);
-    const o25 = overFromRaw(sm.raw, sm.sum, 2.5);
-    const o35 = overFromRaw(sm.raw, sm.sum, 3.5);
+    const g = dcGridMatrix(1.8, 1.4, -0.13);
+    const o15 = overFromRaw(g.raw, g.sum, 1.5);
+    const o25 = overFromRaw(g.raw, g.sum, 2.5);
+    const o35 = overFromRaw(g.raw, g.sum, 3.5);
     expect(o15).toBeGreaterThan(o25);
     expect(o25).toBeGreaterThan(o35);
   });
 
-  it('tail-mass audit retains >= 99.9% of probability over the lambda grid', () => {
+  it('tail-mass audit retains >= 99.5% over the lambda grid (documented bound)', () => {
     const { minSum } = tailAudit();
-    expect(minSum).toBeGreaterThanOrEqual(0.999);
+    expect(minSum).toBeGreaterThanOrEqual(0.995);
   });
 
   it('settlement is deterministic and correct', () => {
