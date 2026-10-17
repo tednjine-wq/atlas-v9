@@ -4,10 +4,12 @@
 // twice (frozen control probs vs C1-adjusted candidate probs),
 // where the candidate's multipliers use ONLY outcomes resolved
 // strictly earlier. Never touches production state or params.
+// R9: paired per-match score differences (candidate - control)
+// with normal-approx CIs, per protocol H2 reporting rules.
 // ============================================================
 import type { Outcome } from '../atlas-types';
 import type { ProspectiveEvent } from '../evidence/prospective-ledger';
-import { evaluateModel } from './benchmark/metrics';
+import { brier, evaluateModel, logLoss, rps } from './benchmark/metrics';
 import type { ModelReport, ScoredMatch } from './benchmark/metrics';
 import { C1_DEFAULTS, applyC1Mult, c1Evaluate, c1InitialState, finalMultFor } from './c1-recalibration';
 import type { C1Config, C1Obs, C1State } from './c1-recalibration';
@@ -18,10 +20,22 @@ export interface ShadowRow {
   outcome: Outcome;
 }
 
+export interface PairedStat { n: number; mean: number; lo: number; hi: number; }
+
 export interface ShadowResult {
   rows: ShadowRow[];
   control: ModelReport; candidate: ModelReport;
   state: C1State;
+  paired: { brier: PairedStat; logLoss: PairedStat; rps: PairedStat };
+}
+
+function pairedStat(diffs: number[]): PairedStat {
+  const n = diffs.length;
+  if (!n) return { n: 0, mean: 0, lo: 0, hi: 0 };
+  const mean = diffs.reduce((a, x) => a + x, 0) / n;
+  const varr = diffs.reduce((a, x) => a + (x - mean) ** 2, 0) / Math.max(1, n - 1);
+  const h = (1.96 * Math.sqrt(varr)) / Math.sqrt(n);
+  return { n, mean, lo: mean - h, hi: mean + h };
 }
 
 export function runShadow(events: ProspectiveEvent[], cfg: C1Config = C1_DEFAULTS): ShadowResult {
@@ -44,7 +58,12 @@ export function runShadow(events: ProspectiveEvent[], cfg: C1Config = C1_DEFAULT
     scoredC.push({ id: e.predictionId!, date, probs: p.probs!, outcome: e.result! });
     scoredK.push({ id: e.predictionId!, date, probs: cand, outcome: e.result! });
     obs.push({ id: e.predictionId!, outcome: e.result!, probs: p.probs!, resolvedAt: date, league: p.league ?? undefined });
-    c1 = c1Evaluate(c1, obs, date, cfg, date).state; // applies only at/above floor, per spec
+    c1 = c1Evaluate(c1, obs, date, cfg, date).state;
   }
-  return { rows, control: evaluateModel('frozen-control', scoredC), candidate: evaluateModel('c1-shadow', scoredK), state: c1 };
+  const paired = {
+    brier: pairedStat(rows.map((r) => brier(r.candidate, r.outcome) - brier(r.control, r.outcome))),
+    logLoss: pairedStat(rows.map((r) => logLoss(r.candidate, r.outcome) - logLoss(r.control, r.outcome))),
+    rps: pairedStat(rows.map((r) => rps(r.candidate, r.outcome) - rps(r.control, r.outcome))),
+  };
+  return { rows, control: evaluateModel('frozen-control', scoredC), candidate: evaluateModel('c1-shadow', scoredK), state: c1, paired };
 }
