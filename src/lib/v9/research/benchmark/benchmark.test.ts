@@ -12,6 +12,11 @@ const PROV = 'synthetic: mulberry32(7), 4 teams x 3 seasons, 10-day spacing, odd
 const MODELS = () => [marketDevig(), poissonNaive(), dcIndependent(), eloModel(), atlasFrozen()];
 const FROZEN_CLOCK = new Date('2026-06-01T12:00:00Z');
 
+// Reproducibility here means: same inputs AND same clock.
+// Frozen Date disables the engine's internal time-budget early-stop,
+// so MC runs to full length -> these two tests need explicit timeouts.
+const pinClock = () => { vi.useFakeTimers(); vi.setSystemTime(FROZEN_CLOCK); };
+
 describe('benchmark harness (research; synthetic success != real improvement)', () => {
   const data = syntheticHistory();
   const res = runBenchmark(data, MODELS(), CFG, PROV);
@@ -41,16 +46,15 @@ describe('benchmark harness (research; synthetic success != real improvement)', 
   });
 
   it('reproducibility: identical inputs AND identical clock produce byte-identical JSON', () => {
-    vi.setSystemTime(FROZEN_CLOCK);
+    pinClock();
     const a = resultsToJson(runBenchmark(data, MODELS(), CFG, PROV));
-    vi.setSystemTime(FROZEN_CLOCK);
     const b = resultsToJson(runBenchmark(data, MODELS(), CFG, PROV));
     vi.useRealTimers();
     expect(b).toBe(a);
-  });
+  }, 30000);
 
   it('no look-ahead: corrupting results from D onward leaves pre-D predictions untouched', () => {
-    vi.setSystemTime(FROZEN_CLOCK);
+    pinClock();
     const clean = runBenchmark(data, MODELS(), CFG, PROV);
     const D = T1 + 30 * 86400000;
     const corrupt = data.map((m) => (m.date >= D ? { ...m, hg: m.ag + 1, ag: m.hg } : m));
@@ -64,5 +68,5 @@ describe('benchmark harness (research; synthetic success != real improvement)', 
     const eloAfter = clean.windows[0].scored['elo-baseline'].filter((s) => s.date >= D);
     const eloAfter2 = res2.windows[0].scored['elo-baseline'].filter((s) => s.date >= D);
     expect(eloAfter2).not.toEqual(eloAfter); // non-vacuous for the stateful model
-  });
+  }, 30000);
 });
