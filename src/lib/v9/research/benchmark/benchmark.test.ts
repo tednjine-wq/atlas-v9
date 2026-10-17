@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runBenchmark, resultsToJson } from './harness';
 import { atlasFrozen, dcIndependent, eloModel, marketDevig, poissonNaive } from './models';
 import { rps } from './metrics';
@@ -10,6 +10,7 @@ const T2 = Date.parse('2024-07-01T00:00:00Z');
 const CFG = { cutoffs: [T1, T2], label: 'synthetic-r2' };
 const PROV = 'synthetic: mulberry32(7), 4 teams x 3 seasons, 10-day spacing, odds derived from generating probs';
 const MODELS = () => [marketDevig(), poissonNaive(), dcIndependent(), eloModel(), atlasFrozen()];
+const FROZEN_CLOCK = new Date('2026-06-01T12:00:00Z');
 
 describe('benchmark harness (research; synthetic success != real improvement)', () => {
   const data = syntheticHistory();
@@ -39,20 +40,28 @@ describe('benchmark harness (research; synthetic success != real improvement)', 
     expect(dev.logLoss).toBeLessThan(nai.logLoss);
   });
 
-  it('reproducibility: identical inputs produce byte-identical JSON', () => {
-    expect(resultsToJson(runBenchmark(data, MODELS(), CFG, PROV))).toBe(resultsToJson(res));
+  it('reproducibility: identical inputs AND identical clock produce byte-identical JSON', () => {
+    vi.setSystemTime(FROZEN_CLOCK);
+    const a = resultsToJson(runBenchmark(data, MODELS(), CFG, PROV));
+    vi.setSystemTime(FROZEN_CLOCK);
+    const b = resultsToJson(runBenchmark(data, MODELS(), CFG, PROV));
+    vi.useRealTimers();
+    expect(b).toBe(a);
   });
 
   it('no look-ahead: corrupting results from D onward leaves pre-D predictions untouched', () => {
+    vi.setSystemTime(FROZEN_CLOCK);
+    const clean = runBenchmark(data, MODELS(), CFG, PROV);
     const D = T1 + 30 * 86400000;
     const corrupt = data.map((m) => (m.date >= D ? { ...m, hg: m.ag + 1, ag: m.hg } : m));
     const res2 = runBenchmark(corrupt, MODELS(), CFG, PROV);
+    vi.useRealTimers();
     for (const mo of ['market-devig', 'poisson-naive', 'dc-independent', 'elo-baseline', 'atlas-frozen-v9.10']) {
-      const before = res.windows[0].scored[mo].filter((s) => s.date < D);
+      const before = clean.windows[0].scored[mo].filter((s) => s.date < D);
       const before2 = res2.windows[0].scored[mo].filter((s) => s.date < D);
       expect(before2).toEqual(before);
     }
-    const eloAfter = res.windows[0].scored['elo-baseline'].filter((s) => s.date >= D);
+    const eloAfter = clean.windows[0].scored['elo-baseline'].filter((s) => s.date >= D);
     const eloAfter2 = res2.windows[0].scored['elo-baseline'].filter((s) => s.date >= D);
     expect(eloAfter2).not.toEqual(eloAfter); // non-vacuous for the stateful model
   });
