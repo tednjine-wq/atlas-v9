@@ -87,7 +87,7 @@ describe('parlay cohort isolation and integrity (R11-parlay)', () => {
     const hit = slipHitRate([{ status: 'settled', won: true }, { status: 'settled', won: false }, { status: 'void', won: false }]);
     expect(hit).toEqual({ won: 1, settled: 2, rate: 0.5, voids: 1 });
     const dd = maxDrawdown([-110, 154.9, -10]);
-    expect(dd.value).toBeCloseTo(10, 9);
+    expect(dd.value).toBeCloseTo(110, 9);
     expect(dd.convention).toContain('zero-baseline');
     expect(dd.n).toBe(3);
   });
