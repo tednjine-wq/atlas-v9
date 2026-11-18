@@ -1,10 +1,9 @@
 // ============================================================
-// Betika fixture parser v1 — handles Betika web-copy shapes:
-//  • horizontal: "Home - Away 2.60 3.40 2.75" (optional time)
-//  • vertical:   team lines stacked, then 1/X/2 odds (one per
-//    line or inline) — the shape Betika's JS grid copies as
-// Only used as FALLBACK when parseFixtureList detects nothing,
-// so SportPesa pipelines are never affected.
+// Betika fixture parser v2 — real Betika table dialect:
+//   DATE TIME GAMEID HOME vs AWAY h d a [dc1 dc12 dcx2 ov un gg ng]
+// One row per fixture; 10 odds possible; "-" = suspended price.
+// Rows with a missing 1X2 price are skipped (engine needs all
+// three). Fallback-only: used when parseFixtureList finds 0.
 // ============================================================
 export interface BetikaFixture {
   home: string; away: string; league: string; country: string;
@@ -12,56 +11,29 @@ export interface BetikaFixture {
   userOdds?: Record<string, number>;
 }
 
-const SKIP = /betika|login|register|sign\s*in|home\s+draw\s+away|\b1\s*x\s*2\b|\bodds\b|boost|preview|copyright|©|loading/i;
-const LEAGUE = /league|premier|championship|division|serie|laliga|la liga|\bcup\b/i;
+const ODD = '(?:\\d+\\.\\d+|-)';
 
 export function parseBetikaList(text: string): BetikaFixture[] {
-  const lines = text.split(/\n/)
-    .map((l) => l.replace(/\|/g, ' ').replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
+  const lines = text.split(/\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
   const out: BetikaFixture[] = [];
-  let league = '';
-  let names: string[] = [];
-  let odds: number[] = [];
-
-  const flush = () => {
-    if (names.length >= 2 && odds.length >= 3) {
-      out.push({
-        home: names[names.length - 2], away: names[names.length - 1],
-        league, country: '', kickoff: '',
-        h: String(odds[0]), d: String(odds[1]), a: String(odds[2]),
-      });
-    }
-    names = []; odds = [];
-  };
-
+  const rowRe = new RegExp(
+    '^(\\d{2}/\\d{2}/\\d{2,4})\\s+(\\d{1,2}:\\d{2})\\s+(\\d{3,6})\\s+' +
+    '(.+?)\\s+vs\\.?\\s+(.+?)\\s+' +
+    `(${ODD})(?:\\s+(${ODD}))(?:\\s+(${ODD}))(?:\\s+${ODD})*$`,
+    'i',
+  );
   for (const line of lines) {
-    // horizontal single-line fixture (greedy home split = last dash)
-    const hm = line.match(/^(?:(\d{1,2}:\d{2})\s+)?(.+)\s+[-–]\s+(.+?)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)$/);
-    if (hm) {
-      flush();
-      out.push({
-        home: hm[2].trim(), away: hm[3].trim(), league, country: '',
-        kickoff: hm[1] ?? '', h: hm[4], d: hm[5], a: hm[6],
-      });
-      continue;
-    }
-    if (SKIP.test(line)) continue;
-    if (LEAGUE.test(line) && !/\d+\.\d+/.test(line)) { flush(); league = line; continue; }
-    const od = line.match(/\d+\.\d+/g);
-    if (od) {
-      odds.push(...od.map(parseFloat));
-      if (odds.length >= 3) flush();
-      continue;
-    }
-    if (/^\d{1,2}\/\d{2}\/\d{2,4}/.test(line) || /^\d{1,2}:\d{2}$/.test(line)) continue;
-    if (/[A-Za-z]{2}/.test(line)) {
-      if (odds.length) flush();
-      names.push(line);
-      if (names.length > 2) names = names.slice(-2);
-      continue;
-    }
+    const m = line.match(rowRe);
+    if (!m) continue;
+    const [h, d, a] = [m[6], m[7], m[8]];
+    if (h === '-' || d === '-' || a === '-') continue; // suspended 1X2
+    out.push({
+      home: m[4].trim(),
+      away: m[5].trim(),
+      league: '', country: '',
+      kickoff: `${m[1]} ${m[2]}`,
+      h, d, a,
+    });
   }
-  flush();
   return out;
 }
